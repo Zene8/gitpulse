@@ -88,13 +88,12 @@ main { max-width: 1400px; margin: 0 auto; padding: 16px 24px 40px; }
 #net .flow { animation: gpflow 1.2s linear infinite; }
 #net .num { font-variant-numeric: tabular-nums; }
 @keyframes gpflow { to { stroke-dashoffset: -24; } }
-@media (prefers-reduced-motion: reduce) { #net .flow, #net animate { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #net .flow, #net animate, #net .agent-ring { animation: none; } }
 
 .legend { display: flex; gap: 6px 16px; padding: 10px 18px; color: var(--mute); font-size: 12px; flex-wrap: wrap; border-top: 1px solid var(--line); background: var(--panel); align-items: center; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .legend i.ring { background: transparent; border: 1.5px solid var(--mute); }
-.legend i.node { width: 16px; border-radius: var(--r-full); background: var(--panel2); border: 1px solid var(--mute); }
 .legend-hint { margin-left: auto; color: var(--mute); }
 
 /* Secondary grid below network */
@@ -193,8 +192,26 @@ details .linkrow { margin-top: 8px; }
 .fine { color: var(--mute); font-size: 12px; margin-top: 12px; }
 
 /* SVG styles */
-.agent-tile-group { cursor: pointer; }
-.agent-tile-group:hover rect.agent-base { stroke: var(--fg) !important; }
+.agent-tile-group { cursor: pointer; outline: none; }
+.agent-tile-group:hover .agent-base, .agent-tile-group:focus-visible .agent-base { stroke: var(--fg) !important; }
+.agent-ring { fill: none; stroke: none; stroke-width: 2; }
+.agent-ring.st-send { stroke: var(--contract); animation: gpring 1.1s ease-in-out infinite; }
+.agent-ring.st-recv { stroke: var(--join); animation: gpring 1.1s ease-in-out infinite; }
+@keyframes gpring { 50% { opacity: .3; } }
+text.st-send { fill: var(--contract); font-weight: 600; }
+text.st-recv { fill: var(--join); font-weight: 600; }
+.now { color: var(--mute); font-size: 12px; white-space: nowrap; }
+.now.st-send { color: var(--contract); font-weight: 600; }
+.now.st-recv { color: var(--join); font-weight: 600; }
+.machine-pick { margin-left: auto; max-width: 62%; font: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg); background: var(--panel2); border: 1px solid var(--line2); border-radius: var(--r-full); padding: 5px 12px; cursor: pointer; text-overflow: ellipsis; }
+.machine-pick:hover, .machine-pick:focus-visible { border-color: var(--fg); outline: none; }
+.machine-pick option { background: var(--panel); color: var(--fg); }
+.cards.rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px; }
+.card.row { flex-direction: row; align-items: center; gap: 9px; padding: 6px 12px 6px 7px; border-radius: var(--r-full); }
+.card.row .av { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 1.5px solid; display: grid; place-items: center; font-size: 10px; font-weight: 600; background: var(--panel2); }
+.card.row .nm { font-weight: 600; font-size: 13px; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.row .io { color: var(--mute); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.card.row .rxdot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
 
 @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
 @media (max-width: 560px) {
@@ -241,17 +258,19 @@ details .linkrow { margin-top: 8px; }
     <svg id="net" viewBox="-480 -160 960 320" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mesh network of machines and coding agents"></svg>
     <div class="legend">
       <span><i class="ring"></i>Machine</span>
-      <span><i class="node"></i>Agent</span>
+      <span><i class="ring" style="border-radius:50%"></i>Agent</span>
+      <span><i class="ring" style="border-color:var(--contract)"></i>Sending</span>
+      <span><i class="ring" style="border-color:var(--join)"></i>Receiving</span>
       <span><i style="background:var(--contract)"></i>Contract packet (signature change)</span>
       <span><i style="background:var(--private)"></i>Private edit (0 B)</span>
       <span><i style="background:var(--join)"></i>Hook delivery</span>
-      <span class="legend-hint">Click any agent for sent/received breakdown</span>
+      <span class="legend-hint">Click any agent for details</span>
     </div>
   </div>
 
   <div class="grid">
     <div class="panel">
-      <div class="ph"><h2>Agents by machine</h2><span class="hint">click for details</span></div>
+      <div class="ph"><h2>Agents by machine</h2><select id="machinePick" class="machine-pick" aria-label="Choose a machine"></select></div>
       <div id="machines" style="padding:14px;"></div>
       <div class="else" id="elsewhere"></div>
     </div>
@@ -329,6 +348,7 @@ function render(st) {
   $('elsewhere').textContent = els.length
     ? `Also running on ${st.host_machine}, in other folders (not tracked): ` + els.map((a) => `${a.engine} in ${a.cwd.split(/[\\/]/).pop()}`).join(', ')
     : '';
+  Object.keys(activity).forEach(paintActivity);
   firstRender = false;
 }
 
@@ -356,7 +376,7 @@ function groups(nodes, st) {
 
 /* Mesh layout. Everything is measured in CSS px around the relay at (0, 0); the
    viewBox is then fitted to the content, so nothing clips and text never scales up. */
-const NET = { hubR: 64, ghostR: 124, pillW: 240, pillH: 38, pillGap: 6, linkGap: 60, tightGap: 30, discGap: 24, pad: 20, minScale: .8 };
+const NET = { hubR: 44, ghostW: 112, ghostH: 62, chipW: 152, chipH: 30, nodeR: 20, labelH: 30, nodeGap: 46, tightNodeGap: 14, maxNamedPerRow: 3, rowGap: 20, cardPad: 12, cardR: 18, linkGap: 44, tightGap: 24, discGap: 20, pad: 16, minScale: .8 };
 const FONT = 'Inter, system-ui, sans-serif';
 const measure = document.createElement('canvas').getContext('2d');
 const textW = (s, px, weight) => { measure.font = `${weight} ${px}px ${FONT}`; return measure.measureText(String(s)).width; };
@@ -381,25 +401,27 @@ function bend(a, c, b, steps = 10) {
   return out;
 }
 
-// Smallest circle that holds a header and a stack of n pills. `top` is the first pill's y.
-function discFor(n) {
-  const { pillW: w, pillH: h, pillGap: gap } = NET;
-  const stack = n * h + Math.max(0, n - 1) * gap;
-  const top = 16 - stack / 2;
-  const toPills = Math.hypot(w / 2 - h / 2, stack / 2 + 16 - h / 2) + h / 2 + 12;
-  const toHeader = Math.hypot(72, top - 38) + 8;
-  return roundShape(Math.ceil(Math.max(toPills, toHeader, 134)), { n, top });
+// A machine is a rounded card: a small name chip with its agents' circles around it.
+// Up to 3 agents sit in one row under the chip; more split into a row above and a row below.
+// When names would collide, the whole machine drops them and its circles pack closer.
+function discFor(nodes) {
+  const { nodeR, nodeGap, tightNodeGap, maxNamedPerRow, labelH, chipW, chipH, rowGap, cardPad } = NET;
+  const n = nodes.length;
+  const twoRows = n > 3;
+  const top = twoRows ? Math.ceil(n / 2) : 0;
+  const rows = twoRows ? [nodes.slice(0, top), nodes.slice(top)] : [nodes];
+  const roomy = 2 * nodeR + nodeGap;
+  const nameW = (x) => textW(x.label, 10.5, 600);
+  const named = rows.every((r) => r.length <= maxNamedPerRow
+    && r.every((x, i) => !i || (nameW(r[i - 1]) + nameW(x)) / 2 <= roomy - 6));
+  const cell = named ? roomy : 2 * nodeR + tightNodeGap;
+  const hw = Math.max(Math.max(...rows.map((r) => r.length), 1) * cell, chipW) / 2 + cardPad;
+  const row = 2 * nodeR + (named ? labelH : 0) + rowGap;
+  const hh = (chipH + rows.length * row + 2 * cardPad) / 2;
+  const chipY = twoRows ? 0 : -hh + cardPad + chipH / 2;
+  return cardShape(hw, hh, { n, twoRows, chipY, cell, named, top });
 }
-const roundShape = (r, extra) => ({ ...extra, r, hw: r, hh: r, rx: r });
-
-// Phones can't fit a full disc at a readable size, so the same content sits in a rounded capsule.
-function capsule(d) {
-  const { pillW, pillH, pillGap } = NET;
-  const shape = { ...d, hw: pillW / 2 + 12, rx: 32, capsule: true };
-  if (d.n === undefined) return { ...shape, hh: 56 };
-  const hh = (44 + d.n * pillH + (d.n - 1) * pillGap + 12) / 2;
-  return { ...shape, hh, top: 44 - hh };
-}
+const cardShape = (hw, hh, extra) => ({ ...extra, hw, hh, rx: NET.cardR });
 
 function bounds(discs, pad) {
   const { hubR } = NET;
@@ -418,8 +440,9 @@ function orbit(discs, aspect, linkGap) {
       const a = (start + i * 360 / M) * Math.PI / 180;
       return { ...d, x: aspect * R * Math.cos(a), y: R * Math.sin(a) };
     });
-    const clear = at.every((a, i) => Math.hypot(a.x, a.y) >= hubR + a.r + linkGap
-      && at.slice(i + 1).every((b) => Math.hypot(a.x - b.x, a.y - b.y) >= a.r + b.r + discGap));
+    const toHub = (a) => Math.hypot(Math.max(0, Math.abs(a.x) - a.hw), Math.max(0, Math.abs(a.y) - a.hh));
+    const apart = (a, b) => Math.abs(a.x - b.x) >= a.hw + b.hw + discGap || Math.abs(a.y - b.y) >= a.hh + b.hh + discGap;
+    const clear = at.every((a, i) => toHub(a) >= hubR + linkGap && at.slice(i + 1).every((b) => apart(a, b)));
     if (clear) return at;
   }
 }
@@ -433,7 +456,8 @@ function placeRadial(discs, avail, linkGap) {
   }
   const links = at.map((d) => {
     const len = Math.hypot(d.x, d.y), ux = d.x / len, uy = d.y / len;
-    return [[ux * NET.hubR, uy * NET.hubR], [d.x - ux * d.r, d.y - uy * d.r]];
+    const toEdge = Math.min(d.hw / Math.abs(ux || 1e-9), d.hh / Math.abs(uy || 1e-9));
+    return [[ux * NET.hubR, uy * NET.hubR], [d.x - ux * toEdge, d.y - uy * toEdge]];
   });
   return { discs: at, links, box };
 }
@@ -441,11 +465,9 @@ function placeRadial(discs, avail, linkGap) {
 // Narrow screens: one column under the relay. Later discs are reached by rails down the sides.
 function placeStack(discs, avail) {
   const { hubR, linkGap, discGap } = NET;
-  const widest = Math.max(0, ...discs.map((d) => d.hw));
-  const shapes = 2 * (widest + 20) > avail ? discs.map(capsule) : discs;
-  const rail = Math.max(0, ...shapes.map((d) => d.hw)) + 10;
+  const rail = Math.max(0, ...discs.map((d) => d.hw)) + 10;
   let y = hubR + linkGap - discGap;
-  const at = shapes.map((d) => { y += discGap + d.hh; const p = { ...d, x: 0, y }; y += d.hh; return p; });
+  const at = discs.map((d) => { y += discGap + d.hh; const p = { ...d, x: 0, y }; y += d.hh; return p; });
   const links = at.map((d, i) => {
     if (!i) return [[0, hubR], [0, d.y - d.hh]];
     const s = i % 2 ? -1 : 1, x = s * rail;
@@ -464,7 +486,7 @@ function planMesh(discs, avail) {
 }
 
 let netKey = '';
-let routes = {};  // agent_id -> points from its pill, out through the machine rim, to the relay rim
+let routes = {};  // agent_id -> points from its node, through the machine chip, to the relay rim
 function renderNet(nodes, st) {
   const succ = st.succession || [];
   const flows = st.flows || [];
@@ -492,13 +514,13 @@ function renderNet(nodes, st) {
         join = css('--join'), warn = css('--warn');
 
   const G = groups(nodes, st);
-  const { hubR, pillW, pillH, pillGap } = NET;
-  const shapes = G.map((g) => discFor(g.nodes.length));
-  if (G.length === 1) shapes.push(roundShape(NET.ghostR));  // room for the "Connect Peer Machine" placeholder
+  const { hubR, nodeR, chipW, chipH, rowGap } = NET;
+  const shapes = G.map((g) => discFor(g.nodes));
+  if (G.length === 1) shapes.push(cardShape(NET.ghostW, NET.ghostH));  // room for the "Connect Peer Machine" placeholder
   const plan = planMesh(shapes, avail);
 
   routes = {};
-  let links = '', clusters = '', agents = '';
+  let links = '', clusters = '', spokes = '', agents = '';
 
   plan.discs.forEach((d, gi) => {
     const link = plan.links[gi], g = G[gi];
@@ -518,46 +540,50 @@ function renderNet(nodes, st) {
     const on = g.nodes.filter((x) => x.online).length;
     const live = on > 0;
     const shown = g.name === 'demo' ? 'Demo' : g.name;
-    const nameY = d.y + d.top - 24;
-    const nameRoom = d.capsule ? 2 * d.hw - 40 : 2 * Math.sqrt(Math.max(0, d.r * d.r - (nameY - 12 - d.y) ** 2)) - 28;
+    const cy = d.y + d.chipY;
+    const status = ` · ${host ? 'Host' : 'Peer'} · ${on}`;
 
     links += `<path d="${pathOf(link)}" fill="none" stroke="${line2}" stroke-width="${live ? 2 : 1}" />`;
     if (live) links += `<path class="flow" d="${pathOf(link)}" fill="none" stroke="${con}" stroke-width="1.5" stroke-dasharray="3 8" stroke-linecap="round" opacity=".8" />`;
 
     clusters += `<g opacity="${live || g.name === 'demo' ? 1 : .45}">
       <title>${esc(shown)}</title>
-      <rect class="machine" x="${r1(d.x - d.hw)}" y="${r1(d.y - d.hh)}" width="${2 * d.hw}" height="${2 * d.hh}" rx="${d.rx}" fill="${panel2}" stroke="${line2}" stroke-width="1.5" />
-      <text x="${r1(d.x)}" y="${r1(nameY)}" text-anchor="middle" fill="${fg}" font-size="13.5" font-weight="600">${esc(fit(shown, 13.5, 600, nameRoom))}</text>
-      <text class="num" x="${r1(d.x)}" y="${r1(nameY + 16)}" text-anchor="middle" fill="${host ? con : mute}" font-size="11" font-weight="500">${host ? 'Host' : 'Peer'} · ${on} active</text>
+      <rect class="machine" x="${r1(d.x - d.hw)}" y="${r1(d.y - d.hh)}" width="${2 * d.hw}" height="${2 * d.hh}" rx="${d.rx}" fill="${panel2}" fill-opacity=".45" stroke="${line2}" stroke-width="1" />
+      <rect x="${r1(d.x - chipW / 2)}" y="${r1(cy - chipH / 2)}" width="${chipW}" height="${chipH}" rx="10" fill="${panel}" stroke="${host ? con : line2}" stroke-width="1.5" />
+      <text x="${r1(d.x)}" y="${r1(cy + 4)}" text-anchor="middle" font-size="11"><tspan fill="${fg}" font-weight="600">${esc(fit(shown, 11, 600, chipW - 14 - textW(status, 11, 500)))}</tspan><tspan class="num" fill="${host ? con : mute}" font-weight="500">${esc(status)}</tspan></text>
     </g>`;
 
+    const { cell, top } = d;
     g.nodes.forEach((x, i) => {
-      const tx = r1(d.x - pillW / 2);
-      const ty = r1(d.y + d.top + i * (pillH + pillGap));
-      routes[x.agent_id] = [[tx + pillW / 2, ty + pillH / 2], ...link.slice().reverse()];
+      const above = i < top;
+      const inRow = above ? top : g.nodes.length - top;
+      const col = above ? i : i - top;
+      const ax = r1(d.x + (col - (inRow - 1) / 2) * cell);
+      const ay = r1(cy + (above ? -1 : 1) * (chipH / 2 + rowGap + nodeR));
+      routes[x.agent_id] = [[ax, ay], [d.x, cy], ...link.slice().reverse()];
+
+      const sx = Math.max(d.x - chipW / 2 + 16, Math.min(d.x + chipW / 2 - 16, ax));
+      const sy = cy + (above ? -1 : 1) * chipH / 2;
+      const len = Math.hypot(ax - sx, ay - sy);
+      spokes += `<path d="${pathOf([[sx, sy], [ax - nodeR * (ax - sx) / len, ay - nodeR * (ay - sy) / len]])}" fill="none" stroke="${line2}" stroke-width="1" opacity="${x.online ? 1 : .45}" />`;
 
       const isSelected = selectedAgentId === x.agent_id;
       const sent = flows.filter((f) => f.source === x.agent_id && f.kind === 'contract').length;
       const recv = (x.inbox || []).length;
       const rx = rxText(x);
       const rxColor = x.delivery === 'hook' ? (x.hook_last_pull ? ok : warn) : x.delivery === 'no_hook' ? warn : dim;
-      const m = x.meta || {};
+      const nameY = above ? ay - nodeR - 19 : ay + nodeR + 13;  // labels sit on the side away from the chip
+      const idle = `↑${sent} ↓${recv}`;
+      const id = esc(x.agent_id);
 
-      const downEnd = tx + pillW - 25;
-      const upEnd = downEnd - textW(`↓${recv}`, 11, 600) - 8;
-      const textX = tx + 38;
-      const textRoom = upEnd - textW(`↑${sent}`, 11, 600) - 8 - textX;
-
-      agents += `<g class="agent-tile-group" onclick="openAgentModal('${esc(x.agent_id)}')">
-        <title>${esc(x.label)} (${esc(x.engine)})\n↑ ${sent} contracts sent · ↓ ${recv} received · ${esc(rx.short)}\nClick to inspect sent/received activity</title>
-        <rect id="agent-tile-${esc(x.agent_id)}" class="agent-base" x="${tx}" y="${ty}" width="${pillW}" height="${pillH}" rx="${pillH / 2}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : line2}" stroke-width="${isSelected ? 1.5 : 1}" />
-        <circle cx="${tx + 19}" cy="${ty + 19}" r="13" fill="${panel2}" stroke="${x.color || dim}" stroke-width="1.5" />
-        <text x="${tx + 19}" y="${ty + 22.5}" text-anchor="middle" fill="${fg}" font-size="10" font-weight="600">${esc(initials(x))}</text>
-        <text x="${textX}" y="${ty + 16.5}" fill="${fg}" font-size="12" font-weight="600">${esc(fit(x.label, 12, 600, textRoom))}</text>
-        <text class="num" x="${textX}" y="${ty + 29.5}" fill="${mute}" font-size="10">${esc(fit(`${x.engine} · ${m.pid ? 'pid ' + m.pid : (x.online ? 'active' : 'offline')}`, 10, 400, textRoom))}</text>
-        <text class="num" x="${r1(upEnd)}" y="${ty + 23}" text-anchor="end" fill="${sent ? con : mute}" font-size="11" font-weight="600">↑${sent}</text>
-        <text class="num" x="${downEnd}" y="${ty + 23}" text-anchor="end" fill="${recv ? join : mute}" font-size="11" font-weight="600">↓${recv}</text>
-        <circle cx="${tx + pillW - 15}" cy="${ty + 19}" r="4" fill="${rxColor}" />
+      agents += `<g class="agent-tile-group" role="button" tabindex="0" aria-label="${esc(x.label)} details" opacity="${x.online ? 1 : .45}" onclick="openAgentModal('${id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgentModal('${id}')}">
+        <title>${esc(x.label)} (${esc(x.engine)})\n↑ ${sent} contracts sent · ↓ ${recv} received · ${esc(rx.short)}\nClick for details</title>
+        <circle class="agent-ring" data-ring="${id}" cx="${ax}" cy="${ay}" r="${nodeR + 4}" />
+        <circle id="agent-tile-${id}" class="agent-base" cx="${ax}" cy="${ay}" r="${nodeR}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : x.color || dim}" stroke-width="1.5" />
+        <text x="${ax}" y="${r1(ay + 4)}" text-anchor="middle" fill="${fg}" font-size="11" font-weight="600">${esc(initials(x))}</text>
+        <circle cx="${r1(ax + 14)}" cy="${r1(ay + 14)}" r="4.5" fill="${rxColor}" stroke="${panel}" stroke-width="1.5" />
+        ${d.named ? `<text x="${ax}" y="${r1(nameY)}" text-anchor="middle" fill="${fg}" font-size="10.5" font-weight="600">${esc(fit(x.label, 10.5, 600, cell + 16))}</text>
+        <text class="num" data-state="${id}" data-idle="${idle}" x="${ax}" y="${r1(nameY + 13)}" text-anchor="middle" fill="${mute}" font-size="10" font-weight="500">${idle}</text>` : ''}
       </g>`;
     });
   });
@@ -568,16 +594,14 @@ function renderNet(nodes, st) {
     <title>GitPulse AST Relay on ${esc(st.host_machine || '')}. Function bodies stay private (0 B); changed signatures pass here.</title>
     <circle r="${hubR + 9}" fill="none" stroke="${line}" stroke-width="1" />
     <circle r="${hubR}" fill="${panel}" stroke="${con}" stroke-width="1.5" />
-    <text y="${lift - 17}" text-anchor="middle" fill="${con}" font-size="11" font-weight="600">GitPulse relay</text>
-    <text class="num" y="${lift + 6}" text-anchor="middle" fill="${fg}" font-size="16" font-weight="600">${esc(fit(code, 16, 600, 104))}</text>
-    <text y="${lift + 23}" text-anchor="middle" fill="${mute}" font-size="10">AST contract hub</text>
+    <text y="${lift + 6}" text-anchor="middle" fill="${fg}" font-size="16" font-weight="600">${esc(fit(code, 16, 600, 72))}</text>
   </g>`;
 
   if (st.takeover_from) {
-    relayHtml += `<text y="${lift + 37}" text-anchor="middle" fill="${mute}" font-size="10">${esc(fit('took over from ' + st.takeover_from, 10, 400, 100))}<title>took over from ${esc(st.takeover_from)}</title></text>`;
+    relayHtml += `<text y="${lift + 22}" text-anchor="middle" fill="${mute}" font-size="10">${esc(fit('took over from ' + st.takeover_from, 10, 400, 66))}<title>took over from ${esc(st.takeover_from)}</title></text>`;
   }
 
-  let h = links + clusters + agents + relayHtml + '<g id="packets"></g>';
+  let h = links + clusters + spokes + agents + relayHtml + '<g id="packets"></g>';
   const box = plan.box;
   if (!nodes.length) {
     h += `<text y="${hubR + 34}" text-anchor="middle" fill="${mute}" font-size="12">
@@ -624,21 +648,55 @@ function pulseTile(id, color) {
   }
 }
 
+// Sending / Receiving is shown for a few seconds after a real flow, then falls back to the idle text.
+const ACTIVE_MS = 4000;
+const activity = {};
+function setActivity(id, kind) {
+  activity[id] = { kind, until: Date.now() + ACTIVE_MS };
+  paintActivity(id);
+  setTimeout(() => paintActivity(id), ACTIVE_MS + 50);
+}
+function paintActivity(id) {
+  const a = activity[id];
+  const kind = a && a.until > Date.now() ? a.kind : '';
+  if (!kind) delete activity[id];
+  document.querySelectorAll(`[data-state="${id}"]`).forEach((el) => {
+    el.textContent = kind === 'send' ? '↑ Sending' : kind === 'recv' ? '↓ Receiving' : el.dataset.idle;
+    el.classList.toggle('st-send', kind === 'send');
+    el.classList.toggle('st-recv', kind === 'recv');
+  });
+  document.querySelectorAll(`[data-ring="${id}"]`).forEach((el) => {
+    el.classList.toggle('st-send', kind === 'send');
+    el.classList.toggle('st-recv', kind === 'recv');
+  });
+}
+const canReceive = (id) => {
+  const n = S && S.nodes && S.nodes[id];
+  return !n || n.source === 'demo' || !['no_hook', 'unsupported'].includes(n.delivery);
+};
+
 function animateFlow(f) {
   if (f.kind === 'private') {
     pulseTile(f.source, css('--private'));
   } else if (f.kind === 'contract') {
+    setActivity(f.source, 'send');
     packet(f.source, 'hub', css('--contract'));
     setTimeout(() => {
       const targets = (f.targets && f.targets.length) ? f.targets : (S && Object.keys(S.nodes || {}).filter((k) => k !== f.source)) || [];
       targets.forEach((tid, i) => {
         packet('hub', tid, css('--contract'), i * 80);
-        setTimeout(() => pulseTile(tid, css('--contract')), 800 + i * 80);
+        setTimeout(() => {
+          pulseTile(tid, css('--contract'));
+          if (canReceive(tid)) setActivity(tid, 'recv');
+        }, 800 + i * 80);
       });
     }, 800);
   } else if (f.kind === 'deliver') {
     packet('hub', f.source, css('--join'));
-    setTimeout(() => pulseTile(f.source, css('--join')), 800);
+    setTimeout(() => {
+      pulseTile(f.source, css('--join'));
+      setActivity(f.source, 'recv');
+    }, 800);
   }
 }
 
@@ -653,56 +711,64 @@ function rxText(n) {
     : { dot: 'var(--warn)', short: 'hook pending', long: 'Hook installed. Restart Claude Code (or type /hooks) so it loads.' };
 }
 
+// One machine at a time, so the list stays short however many devices join.
+const ALL_MACHINES = '__all__';
+let machineView = '';
 function renderMachines(nodes, st) {
   const G = groups(nodes, st);
   const flows = st.flows || [];
-  $('machines').innerHTML = G.map((g) => {
-    const on = g.nodes.filter((n) => n.online).length;
-    const sub = g.info.is_host ? 'host machine'
-      : g.name === 'demo' ? 'demo'
-      : `joined ${ago(g.info.joined)}`;
+  const nameOf = (g) => g.name === 'demo' ? 'Demo' : g.name;
+  if (machineView !== ALL_MACHINES && !G.some((g) => g.name === machineView)) {
+    machineView = (G.find((g) => g.info.is_host) || G[0] || {}).name || '';
+  }
+  if (machineView === ALL_MACHINES && G.length < 2) machineView = (G[0] || {}).name || '';
+
+  const pick = $('machinePick');
+  const options = G.map((g) => `<option value="${esc(g.name)}">${esc(nameOf(g))}${g.info.is_host ? ' (host)' : ''} · ${plural(g.nodes.length, 'agent')}</option>`).join('')
+    + (G.length > 1 ? `<option value="${ALL_MACHINES}">All machines · ${plural(nodes.length, 'agent')}</option>` : '');
+  if (pick.dataset.options !== options) {  // leave it alone otherwise, or an open list would snap shut
+    pick.innerHTML = options;
+    pick.dataset.options = options;
+  }
+  pick.value = machineView;
+  pick.style.display = G.length ? '' : 'none';
+
+  const all = machineView === ALL_MACHINES;
+  $('machines').innerHTML = G.filter((g) => all || g.name === machineView).map((g) => {
     const cards = g.nodes.slice().sort((a, b) => (b.online - a.online) || String(a.label).localeCompare(b.label)).map((n) => card(n, st, flows)).join('');
+    const sub = g.info.is_host ? 'host machine' : g.name === 'demo' ? 'demo' : `joined ${ago(g.info.joined)}`;
     return `<div class="machine-section">
-      <div class="mhd"><div class="mi">${PC}</div><span class="mn">${esc(g.name === 'demo' ? 'Demo' : g.name)}</span>
-      <span class="ms">${sub} · ${plural(on, 'agent')}</span></div>
-      <div class="cards">${cards}</div>
+      ${all ? `<div class="mhd"><div class="mi">${PC}</div><span class="mn">${esc(nameOf(g))}</span><span class="ms">${sub}</span></div>` : ''}
+      <div class="cards rows">${cards}</div>
     </div>`;
   }).join('');
-  document.querySelectorAll('[data-hook]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); installHook(b); });
-  document.querySelectorAll('.card[data-agent]').forEach((c) => c.onclick = () => openAgentModal(c.dataset.agent));
+  document.querySelectorAll('.card[data-agent]').forEach((c) => {
+    c.onclick = () => openAgentModal(c.dataset.agent);
+    c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgentModal(c.dataset.agent); } };
+  });
 }
+$('machinePick').onchange = (e) => {
+  machineView = e.target.value;
+  if (S) {
+    renderMachines(Object.values(S.nodes || {}), S);
+    Object.keys(activity).forEach(paintActivity);
+  }
+};
 
+// One line per agent. Everything else lives in the dialog behind a click.
 function card(n, st, flows) {
   const m = n.meta || {};
-  const status = !n.online ? 'offline' : (m.status || 'running');
-  const files = (m.files || []).map((f) => `<span class="chip" title="${esc(f)}">${esc(f.split(/[\\/]/).slice(-2).join('/'))}</span>`).join('');
-  const sentCount = (flows || []).filter((f) => f.source === n.agent_id && f.kind === 'contract').length;
-  const recvCount = (n.inbox || []).length;
-  const isSelected = selectedAgentId === n.agent_id;
+  const status = !n.online ? 'Offline' : 'Idle';
+  const sent = (flows || []).filter((f) => f.source === n.agent_id && f.kind === 'contract').length;
+  const recv = (n.inbox || []).length;
   const rx = rxText(n);
-  const canConnect = rx.connect && ['Claude Code', 'Antigravity'].includes(n.engine) && n.source === 'local' && isHostView();
-  const rxRow = `<div class="rx"><i style="background:${rx.dot}"></i><span>${esc(rx.long)}</span>${canConnect ? `<button class="btn sm primary" data-hook="${esc(n.agent_id)}">Connect</button>` : ''}</div>`;
-
-  return `<div class="card ${n.online ? '' : 'off'} ${isSelected ? 'selected' : ''}" data-agent="${esc(n.agent_id)}">
-    <div class="hd">
-      <span class="nm">${esc(n.label)}</span>
-      <span class="badge ${status}">${esc(status)}</span>
-      ${m.kind === 'background' ? '<span class="badge">bg</span>' : ''}
-      ${n.is_leader ? '<span class="badge lead">coordinator</span>' : ''}
-    </div>
-    <div class="kv">
-      <span>Sent: <b>${sentCount}</b></span>
-      <span>Received: <b>${recvCount}</b></span>
-      ${m.pid ? `<span>pid <b>${m.pid}</b></span>` : ''}
-      ${m.last_active ? `<span>${ago(m.last_active)}</span>` : ''}
-    </div>
-    ${rxRow}
-    ${m.title ? `<div style="font-weight:600;font-size:12px;">${esc(m.title)}</div>` : ''}
-    ${m.last_prompt ? `<div class="prompt">“${esc(m.last_prompt)}”</div>` : ''}
-    <div><div class="sub">Files edited</div>${files ? `<div class="chips">${files}</div>` : '<div class="empty">none yet</div>'}</div>
-    <div style="margin-top:auto;display:flex;justify-content:flex-end;">
-      <button class="btn sm" onclick="openAgentModal('${esc(n.agent_id)}');event.stopPropagation();">Inspect Details →</button>
-    </div>
+  return `<div class="card row ${n.online ? '' : 'off'} ${selectedAgentId === n.agent_id ? 'selected' : ''}" data-agent="${esc(n.agent_id)}" role="button" tabindex="0" title="${esc(m.title || n.label)}">
+    <span class="av" style="border-color:${n.color || 'var(--dim)'}">${esc(initials(n))}</span>
+    <span class="nm">${esc(n.label)}</span>
+    ${n.is_leader ? '<span class="badge lead">coordinator</span>' : ''}
+    <span class="now" data-state="${esc(n.agent_id)}" data-idle="${status}">${status}</span>
+    <span class="io">↑${sent} ↓${recv}</span>
+    <i class="rxdot" style="background:${rx.dot}" title="${esc(rx.short)}"></i>
   </div>`;
 }
 
@@ -748,7 +814,10 @@ function openAgentModal(aid) {
       <span class="badge ${status}">${esc(status)}</span>
       ${n.is_leader ? '<span class="badge lead">coordinator</span>' : ''}
       ${m.kind === 'background' ? '<span class="badge">bg</span>' : ''}
+      <span class="now" data-state="${esc(aid)}" data-idle="${n.online ? 'Idle' : 'Offline'}" style="margin-left:auto;">${n.online ? 'Idle' : 'Offline'}</span>
     </div>
+
+    ${m.title ? `<div style="font-weight:600;font-size:13px;margin-bottom:12px;">${esc(m.title)}</div>` : ''}
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px;margin-bottom:14px;">
       <div style="background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;">
@@ -803,6 +872,7 @@ function openAgentModal(aid) {
   $('agentModalBody').querySelectorAll('[data-hook]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); installHook(b); });
   $('agentModal').classList.add('open');
   if (S) renderNet(Object.values(S.nodes || {}), S);
+  Object.keys(activity).forEach(paintActivity);
 }
 
 $('closeAgentModal').onclick = () => {
