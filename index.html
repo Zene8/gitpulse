@@ -369,7 +369,7 @@ function renderNet(nodes, st) {
 
   let links = '', clusters = '', agents = '';
 
-  const rw = 96, rh = 84;
+  const rw = 80, rh = 68;
   const rxRelay = hub[0] - rw / 2, ryRelay = hub[1] - rh / 2;
 
   // Render Machine containers (WIDE HORIZONTAL RECTANGLES) and Agent circle bubbles inside (HORIZONTAL LIST)
@@ -377,10 +377,10 @@ function renderNet(nodes, st) {
     G.forEach((g, gi) => {
       const isLeft = gi === 0;
       const count = g.nodes.length;
-      // Wide horizontal machine box
-      const bw = 390;
-      const bh = 150;
-      const bx = isLeft ? 30 : 540;
+      // Wide horizontal machine box with more breathing room from relay
+      const bw = 360;
+      const bh = 140;
+      const bx = isLeft ? 30 : 570;
       const by = hub[1] - bh / 2;
       const host = g.info.is_host;
       const on = g.nodes.filter((x) => x.online).length;
@@ -405,26 +405,25 @@ function renderNet(nodes, st) {
         <text x="${bx + bw - 12}" y="${by + 19}" text-anchor="end" fill="${host ? con : dim}" font-size="9" font-weight="700" font-family="var(--mono)">${host ? 'HOST' : 'PEER'} · ${on} ACTIVE</text>
       </g>`;
 
-      // Horizontal list of Agent circle bubbles inside (smaller, compact fit)
+      // Horizontal list of Agent circle bubbles inside (centered evenly between header and bottom)
       const maxCols = Math.max(3, Math.min(count, 5));
       const slotW = count > 0 ? (bw - 24) / Math.min(count, maxCols) : bw - 24;
-      const r = 17; // compact agent bubble radius
+      const r = 16; // compact agent bubble radius
+      const cyBase = by + 28 + (bh - 28) / 2 - 4; // perfectly centered vertically
 
       // Intra-machine mesh line connecting agents on the same PC
       if (count > 1) {
         for (let i = 0; i < count - 1; i++) {
           const x1 = bx + 12 + slotW * i + slotW / 2;
           const x2 = bx + 12 + slotW * (i + 1) + slotW / 2;
-          const cy = by + 68;
-          links += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="${line}" stroke-width="1" stroke-dasharray="2 3" opacity=".6" />`;
+          links += `<line x1="${x1}" y1="${cyBase}" x2="${x2}" y2="${cyBase}" stroke="${line}" stroke-width="1" stroke-dasharray="2 3" opacity=".6" />`;
         }
       }
 
       g.nodes.forEach((x, i) => {
         const col = i % maxCols;
-        const row = Math.floor(i / maxCols);
         const cx = bx + 12 + slotW * col + slotW / 2;
-        const cy = by + 68 + row * 60;
+        const cy = cyBase;
         pos[x.agent_id] = [cx, cy];
 
         const isSelected = selectedAgentId === x.agent_id;
@@ -465,14 +464,14 @@ function renderNet(nodes, st) {
 
     // If only 1 machine, show a clean peer invite placeholder on the right
     if (M === 1) {
-      const pw = 390, ph = 150;
-      const px = 540, py = hub[1] - ph / 2;
+      const pw = 360, ph = 140;
+      const px = 570, py = hub[1] - ph / 2;
       links += `<line x1="${rxRelay + rw}" y1="${hub[1]}" x2="${px}" y2="${hub[1]}" stroke="${line}" stroke-width="1" stroke-dasharray="3 3" opacity=".5" />`;
       clusters += `<g opacity=".5">
         <rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="4" ry="4" fill="transparent" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
-        <text x="${px + pw / 2}" y="${py + 64}" text-anchor="middle" fill="${mute}" font-size="12" font-weight="600">+ Connect Peer Machine</text>
-        <text x="${px + pw / 2}" y="${py + 84}" text-anchor="middle" fill="${dim}" font-size="10.5">Laptop or VM on LAN / Internet</text>
-        <text x="${px + pw / 2}" y="${py + 104}" text-anchor="middle" fill="${dim}" font-size="9.5" font-family="var(--mono)">Click 'Invite' top right</text>
+        <text x="${px + pw / 2}" y="${py + 60}" text-anchor="middle" fill="${mute}" font-size="12" font-weight="600">+ Connect Peer Machine</text>
+        <text x="${px + pw / 2}" y="${py + 78}" text-anchor="middle" fill="${dim}" font-size="10.5">Laptop or VM on LAN / Internet</text>
+        <text x="${px + pw / 2}" y="${py + 96}" text-anchor="middle" fill="${dim}" font-size="9.5" font-family="var(--mono)">Click 'Invite' top right</text>
       </g>`;
     }
   } else {
@@ -480,8 +479,8 @@ function renderNet(nodes, st) {
     G.forEach((g, gi) => {
       const isLeft = gi % 2 === 0;
       const row = Math.floor(gi / 2);
-      const bw = 380, bh = 145;
-      const bx = isLeft ? 30 : 550;
+      const bw = 360, bh = 140;
+      const bx = isLeft ? 30 : 570;
       const by = 26 + row * 165;
       const host = g.info.is_host;
       const on = g.nodes.filter((x) => x.online).length;
@@ -503,19 +502,19 @@ function renderNet(nodes, st) {
       const count = g.nodes.length;
       const slotW = count > 0 ? (bw - 24) / Math.min(count, maxCols) : bw - 24;
       const r = 16;
+      const cyBase = by + 26 + (bh - 26) / 2 - 4;
 
       if (count > 1) {
         for (let i = 0; i < Math.min(count, 4) - 1; i++) {
           const x1 = bx + 12 + slotW * i + slotW / 2;
           const x2 = bx + 12 + slotW * (i + 1) + slotW / 2;
-          const cy = by + 65;
-          links += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="${line}" stroke-width="1" stroke-dasharray="2 3" opacity=".6" />`;
+          links += `<line x1="${x1}" y1="${cyBase}" x2="${x2}" y2="${cyBase}" stroke="${line}" stroke-width="1" stroke-dasharray="2 3" opacity=".6" />`;
         }
       }
 
       g.nodes.slice(0, 4).forEach((x, i) => {
         const cx = bx + 12 + slotW * i + slotW / 2;
-        const cy = by + 65;
+        const cy = cyBase;
         pos[x.agent_id] = [cx, cy];
         const isSelected = selectedAgentId === x.agent_id;
         agents += `<g class="agent-node-group" onclick="openAgentModal('${esc(x.agent_id)}')">
@@ -530,14 +529,14 @@ function renderNet(nodes, st) {
     });
   }
 
-  // Central GitPulse Relay
+  // Central GitPulse Relay (smaller, more rounded)
   const code = (st.session || {}).code || '';
   let relayHtml = `<g>
-    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="${rh}" rx="4" ry="4" fill="${panel}" stroke="${con}" stroke-width="1.5" />
-    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="24" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
-    <text x="${hub[0]}" y="${ryRelay + 16}" text-anchor="middle" fill="${con}" font-size="9.5" font-weight="700" letter-spacing=".08em" font-family="var(--mono)">GITPULSE RELAY</text>
-    <text x="${hub[0]}" y="${hub[1] + 8}" text-anchor="middle" fill="${fg}" font-size="13.5" font-weight="700" font-family="var(--mono)">${esc(code)}</text>
-    <text x="${hub[0]}" y="${hub[1] + 25}" text-anchor="middle" fill="${dim}" font-size="8.5" font-family="var(--mono)">AST CONTRACT HUB</text>
+    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="${rh}" rx="12" ry="12" fill="${panel}" stroke="${con}" stroke-width="1.5" />
+    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="20" rx="12" ry="12" fill="${panel2}" stroke="${line}" stroke-width="1" />
+    <text x="${hub[0]}" y="${ryRelay + 14}" text-anchor="middle" fill="${con}" font-size="8.5" font-weight="700" letter-spacing=".08em" font-family="var(--mono)">GITPULSE</text>
+    <text x="${hub[0]}" y="${hub[1] + 6}" text-anchor="middle" fill="${fg}" font-size="12" font-weight="700" font-family="var(--mono)">${esc(code)}</text>
+    <text x="${hub[0]}" y="${hub[1] + 20}" text-anchor="middle" fill="${dim}" font-size="7.5" font-family="var(--mono)">AST HUB</text>
     <title>GitPulse AST Relay on ${esc(st.host_machine || '')}. Function bodies stay private (0 B); changed signatures pass here.</title>
   </g>`;
 
