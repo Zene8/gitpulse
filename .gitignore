@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .venv/
 workspace_repo/
+mesh_state.db*

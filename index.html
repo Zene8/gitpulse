@@ -57,22 +57,25 @@
         <span class="text-xs font-bold tracking-[0.2em] uppercase">GITHUB // MAIN</span>
       </div>
       <div class="h-3 w-[1px] bg-neutral-800"></div>
-      <!-- Unified PRs / Atomic Commits landed on main -->
-      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[46vw]">
-        <span class="text-[10px] text-neutral-600 tracking-widest">NO PR MERGED YET</span>
+      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[36vw]">
+        <span class="text-[10px] text-neutral-600 tracking-widest">WAITING FOR UNIFIED PR</span>
       </div>
     </div>
 
     <!-- Minimal Sharp Controls -->
     <div class="flex items-center gap-2">
-      <div class="hidden md:flex items-center gap-4 mr-4 text-[10px] text-neutral-500 tracking-wider">
-        <span>IDEAS <strong id="k-ideas" class="text-white">0</strong></span>
-        <span>LOCAL <strong id="k-local" class="text-emerald-400">0</strong></span>
-        <span>ADAPTED <strong id="k-adapt" class="text-amber-400">0</strong></span>
+      <div class="hidden xl:flex items-center gap-3.5 mr-3 text-[10px] text-neutral-500 tracking-wider">
+        <span>TERM <strong id="k-term" class="text-white">1</strong></span>
+        <span>HOST <strong id="k-leader" class="text-amber-400">AUTH</strong></span>
+        <span>MERGES <strong id="k-merges" class="text-fuchsia-400">0</strong></span>
+        <span>ADAPTED <strong id="k-adapt" class="text-sky-400">0</strong></span>
         <span>PRs <strong id="k-prs" class="text-orange-500">0</strong></span>
       </div>
       <button onclick="stepSim()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-white px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
         + IDEA
+      </button>
+      <button onclick="runConflict()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-fuchsia-400 text-fuchsia-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
+        3-WAY MERGE
       </button>
       <button onclick="runSpeculation()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-indigo-400 text-indigo-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
         3X RACE
@@ -89,7 +92,6 @@
 
   <!-- ================= MIDDLE: THE INTERMITTENT MESH CLOUD ================= -->
   <main class="relative flex-1 my-3 flex items-center justify-center overflow-hidden">
-    <!-- Full-canvas SVG for Cloud Silhouette + Uplink Beams + PR Merge Beams -->
     <svg id="scene-svg" viewBox="0 0 1200 540" preserveAspectRatio="none" class="absolute inset-0 w-full h-full pointer-events-none">
       <defs>
         <radialGradient id="cloudGlow" cx="50%" cy="48%" r="48%">
@@ -102,10 +104,9 @@
         </filter>
       </defs>
 
-      <!-- Ambient Cloud Core Glow -->
       <ellipse cx="600" cy="255" rx="430" ry="165" fill="url(#cloudGlow)" filter="url(#blurGlow)" />
 
-      <!-- Actual Cloud Silhouette (Sharp Architectural Double-Contour Cloud) -->
+      <!-- Outer Architectural Cloud Silhouette -->
       <path id="cloud-outer"
         d="M 270 345
            L 205 345
@@ -138,14 +139,17 @@
         stroke-width="0.75"
         stroke-dasharray="4 6" />
 
-      <!-- Dynamic Lines Layer (Uplinks from Agents -> Cloud & Cloud -> GitHub) -->
       <g id="beams-layer"></g>
     </svg>
 
     <!-- Cloud Center Watermark Label -->
     <div class="pointer-events-none z-0 text-center">
-      <div class="text-[10px] tracking-[0.35em] text-neutral-600 uppercase">INTERMITTENT AST GOSSIP CLOUD</div>
-      <div id="cloud-status" class="text-[9px] tracking-[0.2em] text-neutral-700 uppercase mt-1">FLOATING DIFFS &amp; INTENT VECTORS</div>
+      <div class="text-[10px] tracking-[0.35em] text-neutral-600 uppercase">
+        AST MERKLE CLOUD // <span id="merkle-badge" class="text-neutral-500">00000000</span>
+      </div>
+      <div id="cloud-status" class="text-[9px] tracking-[0.2em] text-neutral-700 uppercase mt-1">
+        CAUSAL VECTOR GOSSIP &amp; 3-WAY AST SYNTHESIS
+      </div>
     </div>
 
     <!-- Floating Ideas & Git Diffs Inside the Cloud -->
@@ -163,13 +167,11 @@
     let flushingAnim = false;
     let unmergedItems = [];
     let mergedPRs = [];
-    let lastDagLen = 0;
 
-    // Fixed spatial slots inside the Cloud silhouette so cards spread cleanly
     const CLOUD_SLOTS = [
       { left: '16%', top: '34%' },
-      { left: '34%', top: '20%' },
-      { left: '53%', top: '18%' },
+      { left: '34%', top: '19%' },
+      { left: '53%', top: '17%' },
       { left: '70%', top: '26%' },
       { left: '24%', top: '50%' },
       { left: '46%', top: '46%' },
@@ -185,23 +187,26 @@
 
     ws.onmessage = (event) => {
       const state = JSON.parse(event.data);
-      updateKPIs(state.metrics);
-      processDAG(state.dag, state.speculative_runs);
+      updateKPIs(state.metrics, state.cluster);
+      processDAG(state.dag);
       renderBeams(state.nodes, state.beam);
-      renderCloudField(state.nodes);
+      renderCloudField();
       renderAgents(state.nodes);
     };
 
-    function updateKPIs(m) {
-      document.getElementById('k-ideas').innerText = m.micro_mutations_absorbed;
-      document.getElementById('k-local').innerText = m.private_edits_suppressed;
+    function updateKPIs(m, cluster) {
+      if (cluster) {
+        document.getElementById('k-term').innerText = cluster.term;
+        document.getElementById('k-leader').innerText = cluster.leader_id.replace('agent-', '').toUpperCase();
+        document.getElementById('merkle-badge').innerText = cluster.merkle_root;
+      }
+      document.getElementById('k-merges').innerText = m.ast_merges_completed || 0;
       document.getElementById('k-adapt').innerText = m.conflicts_auto_resolved;
       document.getElementById('k-prs').innerText = m.atomic_github_pushes;
     }
 
-    function processDAG(dag, specRuns) {
+    function processDAG(dag) {
       if (!dag) return;
-      // Extract merged Epoch Flushes for the top GitHub bar
       mergedPRs = dag.filter(c => c.kind === 'EPOCH-FLUSH' && c.git_sha);
       const mainBar = document.getElementById('main-commits');
       if (mergedPRs.length === 0) {
@@ -211,12 +216,11 @@
           <div onclick="rollback('${pr.commit_id}')" title="Click to rollback to ${pr.git_sha}"
             class="cursor-pointer border border-orange-500/70 bg-orange-950/30 px-2 py-0.5 text-[10px] text-orange-300 flex items-center gap-1.5 hover:bg-orange-500 hover:text-black transition shrink-0">
             <span class="font-bold">PR #${pr.git_sha}</span>
-            <span class="opacity-75">${pr.timestamp}</span>
+            <span class="opacity-75">T${pr.term}</span>
           </div>
         `).join('');
       }
 
-      // Floating items inside the cloud = all commits since the last EPOCH-FLUSH
       let lastFlushIdx = -1;
       for (let i = dag.length - 1; i >= 0; i--) {
         if (dag[i].kind === 'EPOCH-FLUSH') {
@@ -231,7 +235,6 @@
       const layer = document.getElementById('beams-layer');
       let svg = '';
 
-      // 1. Cloud -> GitHub Main convergence funnels (top of cloud y=105 to y=0)
       const flushing = beam && beam.kind === 'flush';
       [420, 600, 780].forEach(x => {
         svg += `<line x1="${x}" y1="100" x2="600" y2="0"
@@ -240,26 +243,23 @@
           class="${flushing ? 'uplink-active' : ''}" />`;
       });
 
-      // 2. Agent Docks (y=540) -> Cloud Base (y=345)
       Object.values(nodes).forEach(n => {
         const x = AGENT_X[n.agent_id] || 600;
         const active = beam && beam.source === n.agent_id;
         if (!n.online) {
-          // Severed link: red dashed line that stops halfway with an X
           svg += `
             <line x1="${x}" y1="540" x2="${x}" y2="430" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 4" />
             <line x1="${x-6}" y1="424" x2="${x+6}" y2="436" stroke="#ef4444" stroke-width="1.5" />
             <line x1="${x+6}" y1="424" x2="${x-6}" y2="436" stroke="#ef4444" stroke-width="1.5" />
           `;
         } else {
-          const stroke = active ? '#ffffff' : '#262626';
-          const width = active ? 2.2 : 1;
+          const stroke = active ? '#ffffff' : (n.is_leader ? '#f59e0b' : '#262626');
+          const width = active ? 2.2 : (n.is_leader ? 1.4 : 1);
           const cls = active ? 'uplink-active' : '';
           svg += `<line x1="${x}" y1="540" x2="${x}" y2="345" stroke="${stroke}" stroke-width="${width}" class="${cls}" />`;
         }
       });
 
-      // 3. Internal Cloud Gossip mesh threads connecting floating slots
       if (unmergedItems.length > 1) {
         const pts = [
           [280, 210], [450, 155], [640, 145], [830, 185], [350, 285], [580, 265], [790, 280]
@@ -267,7 +267,7 @@
         for (let i = 0; i < Math.min(unmergedItems.length - 1, pts.length - 1); i++) {
           const [x1, y1] = pts[i];
           const [x2, y2] = pts[i + 1];
-          svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" stroke-dasharray="2 4" />`;
+          svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(255,255,255,0.14)" stroke-width="0.8" stroke-dasharray="2 4" />`;
         }
       }
 
@@ -276,16 +276,16 @@
       const status = document.getElementById('cloud-status');
       if (beam) {
         if (beam.kind === 'flush') {
-          status.innerText = 'COMPACTING ALL CLOUD DIFFS → 1 ATOMIC GITHUB PR';
+          status.innerText = 'COORDINATOR COMPACTING ALL CLOUD DIFFS → 1 ATOMIC GITHUB PR';
           status.className = 'text-[9px] tracking-[0.2em] text-orange-400 uppercase mt-1';
         } else if (beam.kind === 'local') {
           status.innerText = `${beam.source.toUpperCase()} // PRIVATE AST BODY DIFF (0 BYTES BROADCAST)`;
           status.className = 'text-[9px] tracking-[0.2em] text-emerald-400 uppercase mt-1';
         } else if (beam.kind === 'gossip') {
-          status.innerText = `${beam.source.toUpperCase()} // CONTRACT DELTA GOSSIPED ACROSS CLOUD`;
+          status.innerText = `${beam.source.toUpperCase()} // MERKLE DELTA & CALL-SITE AST REWRITE GOSSIPED`;
           status.className = 'text-[9px] tracking-[0.2em] text-sky-400 uppercase mt-1';
         } else if (beam.kind === 'buffered') {
-          status.innerText = `${beam.source.toUpperCase()} // LINK SEVERED — HOLDING IN LOCAL OUTBOX`;
+          status.innerText = `${beam.source.toUpperCase()} // LINK SEVERED — HOLDING IN CRDT OUTBOX`;
           status.className = 'text-[9px] tracking-[0.2em] text-red-400 uppercase mt-1';
         }
       }
@@ -315,6 +315,14 @@
           border = 'border-sky-400/80';
           tagColor = 'text-sky-300';
           tag = 'CONTRACT';
+        } else if (item.kind === 'AST-3WAY-MERGE') {
+          border = 'border-fuchsia-400';
+          tagColor = 'text-fuchsia-300';
+          tag = '3-WAY MERGE';
+        } else if (item.kind === 'HOST-FAILOVER') {
+          border = 'border-amber-400';
+          tagColor = 'text-amber-300';
+          tag = 'FAILOVER';
         } else if (item.kind === 'SPECULATIVE-WIN') {
           border = 'border-indigo-400';
           tagColor = 'text-indigo-300';
@@ -334,7 +342,7 @@
           <div onclick="rollback('${item.commit_id}')"
             title="Click to rollback mesh to #${item.commit_id}"
             style="left: ${slot.left}; top: ${slot.top}; animation-delay: ${delay}s;"
-            class="floating-card pointer-events-auto cursor-pointer absolute w-52 bg-black/95 border ${border} p-2.5 shadow-2xl hover:border-white transition">
+            class="floating-card pointer-events-auto cursor-pointer absolute w-56 bg-black/95 border ${border} p-2.5 shadow-2xl hover:border-white transition">
             <div class="flex justify-between items-center text-[9px] tracking-widest uppercase mb-1">
               <span class="text-white font-bold">${item.agent_id.replace('agent-', '')}</span>
               <span class="${tagColor}">${tag} #${item.commit_id.slice(0, 4)}</span>
@@ -353,8 +361,11 @@
       container.innerHTML = Object.values(nodes).map(n => {
         const shortName = n.agent_id.replace('agent-', '').toUpperCase();
         const sig = n.symbols && n.symbols[0] ? n.symbols[0].signature : n.target_module;
-        const hash = n.symbols && n.symbols[0] ? n.symbols[0].signature_hash.slice(0, 6) : '000000';
-        const onlineBorder = n.online ? 'border-neutral-800 hover:border-neutral-600' : 'border-red-600 bg-red-950/10';
+        const onlineBorder = n.online
+          ? (n.is_leader ? 'border-amber-500/80' : 'border-neutral-800 hover:border-neutral-600')
+          : 'border-red-600 bg-red-950/10';
+
+        const vcStr = Object.entries(n.vector_clock).map(([k, v]) => `${k.replace('agent-', '')[0]}:${v}`).join(' ');
 
         return `
           <div class="border ${onlineBorder} bg-black/95 p-3.5 flex flex-col justify-between transition">
@@ -362,25 +373,26 @@
               <div class="flex items-center gap-2">
                 <span class="w-1.5 h-1.5 ${n.online ? 'bg-emerald-400' : 'bg-red-500 animate-ping'}"></span>
                 <span class="text-xs font-bold tracking-[0.2em]">${shortName}</span>
+                ${n.is_leader ? `<span class="text-[9px] bg-amber-500 text-black font-bold px-1.5 py-0.2 tracking-widest">HOST T${n.term}</span>` : ''}
                 <span class="text-[10px] text-neutral-600">${n.target_module}</span>
               </div>
               <div class="flex items-center gap-1.5">
                 ${n.outbox_size > 0 ? `<span class="text-[9px] bg-red-950 text-red-300 border border-red-700 px-1.5 py-0.5">OUTBOX ${n.outbox_size}</span>` : ''}
                 <button onclick="togglePartition('${n.agent_id}')"
                   class="border ${n.online ? 'border-neutral-800 text-neutral-400 hover:border-red-500 hover:text-red-400' : 'border-red-500 text-red-300 bg-red-950/40'} px-2 py-0.5 text-[9px] tracking-widest uppercase transition">
-                  ${n.online ? 'LINKED' : 'SEVERED'}
+                  ${n.online ? (n.is_leader ? 'KILL HOST' : 'LINKED') : 'REJOIN'}
                 </button>
               </div>
             </div>
 
             <div class="bg-neutral-950 border border-neutral-900 px-2.5 py-1.5 mb-2 flex justify-between items-center text-[10px]">
               <span class="text-sky-300 truncate">${escapeHtml(sig)}</span>
-              <span class="text-neutral-600 ml-2 shrink-0">#${hash}</span>
+              <span class="text-neutral-600 ml-2 shrink-0">M:${n.merkle_root.slice(0, 6)}</span>
             </div>
 
             <div class="flex justify-between items-center text-[9px] text-neutral-500 tracking-wider uppercase">
-              <span class="truncate max-w-[70%]">${escapeHtml(n.intent)}</span>
-              <span class="text-neutral-400">Δ ${n.local_micro_commits}</span>
+              <span class="truncate max-w-[65%]">${escapeHtml(n.intent)}</span>
+              <span class="text-neutral-400">[${vcStr}] Δ${n.local_micro_commits}</span>
             </div>
           </div>
         `;
@@ -392,6 +404,7 @@
     }
 
     async function stepSim() { await fetch('/api/step', { method: 'POST' }); }
+    async function runConflict() { await fetch('/api/conflict', { method: 'POST' }); }
     async function runSpeculation() { await fetch('/api/speculate', { method: 'POST' }); }
     async function togglePartition(id) { await fetch(`/api/partition/${id}`, { method: 'POST' }); }
     async function rollback(cid) { await fetch(`/api/rollback/${cid}`, { method: 'POST' }); }
