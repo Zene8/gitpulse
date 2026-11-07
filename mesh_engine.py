@@ -1910,25 +1910,58 @@ class MeshCluster:
         self.flows = self.flows[-80:]
         return f
 
-    def record_file_change(self, agent_id: str, repo: str, rel_path: str, old: str, new: str, attribution: str = "transcript") -> dict:
+    def record_file_change(
+        self,
+        agent_id: str,
+        repo: str,
+        rel_path: str,
+        old: str,
+        new: str,
+        attribution: str = "transcript",
+        source_path: str = "",
+    ) -> dict:
         """
         The core idea, applied to real edits: diff the file's AST.
-        - only function bodies changed            -> private edit, nothing sent to peers
-        - a signature / class / constant changed  -> queue just that contract for every peer
-        Peers actually get it when their Claude Code hook pulls it (see pull_inbox).
+        - only function bodies changed            -> private edit (0 B to LLM hook, AST patch synced to peer disk)
+        - a signature / class / constant changed  -> queue just that contract for every peer's LLM hook + disk
         """
         node = self.nodes[agent_id]
         old_syms = ASTEngine.extract_symbols(old, agent_id)
         new_syms = ASTEngine.extract_symbols(new, agent_id)
+        old_imports = set(ASTEngine.extract_imports(old))
+        new_imports = [imp for imp in ASTEngine.extract_imports(new) if imp not in old_imports]
         added = [k for k in new_syms if k not in old_syms]
         removed = [k for k in old_syms if k not in new_syms]
         sig_changed = [k for k in new_syms if k in old_syms and new_syms[k].signature_hash != old_syms[k].signature_hash]
         body_changed = [k for k in new_syms if k in old_syms and k not in sig_changed and new_syms[k].body_hash != old_syms[k].body_hash]
         contract = added + sig_changed + removed
+        touched_symbols = added + sig_changed + body_changed
+
+        # Echo suppression: if every changed/removed symbol already matches known_peer_symbols, this is our own disk sync write
+        if (touched_symbols or removed) and not new_imports:
+            is_echo = True
+            for k in touched_symbols:
+                peer_sym = node.known_peer_symbols.get(f"{rel_path}:{k}")
+                if not peer_sym or peer_sym.signature_hash != new_syms[k].signature_hash or peer_sym.body_hash != new_syms[k].body_hash:
+                    is_echo = False
+                    break
+            for k in removed:
+                if f"{rel_path}:{k}" in node.known_peer_symbols:
+                    is_echo = False
+                    break
+            if is_echo:
+                for k in removed:
+                    node.local_symbols.pop(f"{rel_path}:{k}", None)
+                node.local_symbols = {**node.local_symbols, **{f"{rel_path}:{k}": v for k, v in new_syms.items()}}
+                node.merkle_root = ASTEngine.compute_merkle_root(node.local_symbols)
+                return {"kind": "echo_suppressed", "bytes_sent": 0}
 
         node.vector_clock[agent_id] = node.vector_clock.get(agent_id, 0) + 1
         node.local_micro_commits += 1
         node.intent = f"editing {rel_path}"
+        for k in removed:
+            node.local_symbols.pop(f"{rel_path}:{k}", None)
+            node.known_peer_symbols.pop(f"{rel_path}:{k}", None)
         node.local_symbols = {**node.local_symbols, **{f"{rel_path}:{k}": v for k, v in new_syms.items()}}
         node.merkle_root = ASTEngine.compute_merkle_root(node.local_symbols)
         self.metrics["micro_mutations_absorbed"] += 1
@@ -1939,9 +1972,8 @@ class MeshCluster:
         self.last_file_edit_ts = now
 
         # Feature B: Conflict Pre-emption (Live Collision Detection)
-        touched_symbols = added + sig_changed + body_changed
         collisions = []
-        for sym in touched_symbols:
+        for sym in touched_symbols + removed:
             lease_key = f"{where}:{sym}"
             prev_lease = self.active_leases.get(lease_key)
             if prev_lease and prev_lease.get("agent_id") != agent_id and (now - prev_lease.get("ts", 0) < 60):
@@ -1972,12 +2004,79 @@ class MeshCluster:
                     "id": secrets.token_hex(4), "from": prev["agent_id"], "file": where,
                     "contract": [col_warning], "time": time.strftime("%H:%M:%S"), "delivered": "", "is_collision": True,
                 })
+                if node.machine:
+                    self.machine_patches.setdefault(node.machine, []).append({
+                        "is_collision": True, "warning": col_warning, "patches": [],
+                    })
                 if other_node:
                     other_warning = f"⚠️ [GitPulse Collision Warning] {label} is also actively editing '{sym}' in {where}. Coordinate to avoid collisions!"
                     other_node.inbox.append({
                         "id": secrets.token_hex(4), "from": agent_id, "file": where,
                         "contract": [other_warning], "time": time.strftime("%H:%M:%S"), "delivered": "", "is_collision": True,
                     })
+                    if other_node.machine:
+                        self.machine_patches.setdefault(other_node.machine, []).append({
+                            "is_collision": True, "warning": other_warning, "patches": [],
+                        })
+
+        # Feature A: Prepare non-conflicting AST patches (upserts + deletes + new top-level imports)
+        patches = []
+        created_file = not bool(old.strip())
+        for idx, k in enumerate(touched_symbols):
+            if k in new_syms and new_syms[k].source:
+                patches.append({
+                    "symbol": k,
+                    "action": "upsert",
+                    "code": new_syms[k].source,
+                    "imports": new_imports if idx == 0 else [],
+                    "created": created_file and idx == 0,
+                    "file": where,
+                    "repo": repo,
+                    "path": rel_path,
+                })
+        for k in removed:
+            patches.append({
+                "symbol": k,
+                "action": "delete",
+                "code": "",
+                "imports": [],
+                "created": False,
+                "file": where,
+                "repo": repo,
+                "path": rel_path,
+            })
+
+        peers = [p for p, n in self.nodes.items() if p != agent_id and n.online]
+        for p in peers:
+            peer = self.nodes[p]
+            for k in removed:
+                peer.known_peer_symbols.pop(f"{rel_path}:{k}", None)
+            for k in touched_symbols:
+                if k in new_syms:
+                    peer.known_peer_symbols[f"{rel_path}:{k}"] = new_syms[k]
+
+        # Sync AST patches to peer worktrees on host and queue for remote machines
+        if patches:
+            for p in patches:
+                synced = self.sync_patch_to_disk(
+                    agent_id,
+                    p["repo"],
+                    p["path"],
+                    p["symbol"],
+                    p["code"],
+                    action=p.get("action", "upsert"),
+                    imports=p.get("imports"),
+                    created=p.get("created", False),
+                    source_path=source_path,
+                )
+                if synced:
+                    self.metrics["ast_patches_synced"] = self.metrics.get("ast_patches_synced", 0) + 1
+            remote_machines = {self.nodes[p].machine for p in peers if self.nodes[p].source == "remote" and self.nodes[p].machine != node.machine}
+            for mach in remote_machines:
+                self.machine_patches.setdefault(mach, []).append({
+                    "from": agent_id, "from_label": label, "file": where, "patches": patches, "is_collision": False,
+                })
+                self.machine_patches[mach] = self.machine_patches[mach][-40:]
 
         if not contract:
             self.metrics["private_edits_suppressed"] += 1
@@ -1992,7 +2091,6 @@ class MeshCluster:
                 machine=node.machine,
             )
 
-        peers = [p for p, n in self.nodes.items() if p != agent_id and n.online]
         lines = []
         for k in added:
             lines.append(f"+ {new_syms[k].signature}")
@@ -2014,24 +2112,6 @@ class MeshCluster:
             verb.append(f"removed {', '.join(removed[:3])}")
         summary = f"{label} {' and '.join(verb)} in {where}"
 
-        # Feature A: Prepare non-conflicting AST patches
-        patches = []
-        for k in added + sig_changed:
-            if k in new_syms and new_syms[k].source:
-                patches.append({
-                    "symbol": k,
-                    "code": new_syms[k].source,
-                    "file": where,
-                    "repo": repo,
-                    "path": rel_path,
-                })
-
-        # Apply non-conflicting AST patch to local worktrees on disk
-        for p in patches:
-            synced = self.sync_patch_to_disk(agent_id, p["repo"], p["path"], p["symbol"], p["code"])
-            if synced:
-                self.metrics["ast_patches_synced"] = self.metrics.get("ast_patches_synced", 0) + 1
-
         flow = self._flow(
             "contract", agent_id, peers,
             summary=summary,
@@ -2045,8 +2125,6 @@ class MeshCluster:
             peer.inbox.append({"id": secrets.token_hex(4), "flow": flow["id"], "from": agent_id, "file": where,
                                "contract": lines[:8], "patches": patches, "time": time.strftime("%H:%M:%S"), "delivered": ""})
             peer.inbox = peer.inbox[-20:]
-            for k in added + sig_changed:
-                peer.known_peer_symbols[f"{rel_path}:{k}"] = new_syms[k]
         self._record_dag(agent_id, "CONTRACT-GOSSIP", summary, diff="\n".join(lines[:3]))
         self.log_event("GOSSIP", f"{summary}. Queued {sent} B for {len(peers)} peer(s) instead of the {file_bytes} B file.")
         return flow
@@ -2100,13 +2178,39 @@ class MeshCluster:
             "file": x["file"], "contract": x["contract"],
             "patches": x.get("patches", []),
             "is_collision": x.get("is_collision", False),
+            "is_gossip": x.get("is_gossip", False),
         } for x in pending]
 
-    def sync_patch_to_disk(self, source_agent_id: str, repo: str, rel_path: str, symbol_name: str, new_symbol_code: str) -> bool:
+    def pull_patches(self, machine: str) -> List[dict]:
+        """Called by agent_client.py background watcher to pull disk AST patches without marking LLM hook inbox items as delivered."""
+        if not machine:
+            return []
+        items = self.machine_patches.pop(machine, [])
+        if items:
+            self.metrics["ast_patches_synced"] = self.metrics.get("ast_patches_synced", 0) + sum(len(x.get("patches") or []) for x in items)
+        return items
+
+    def sync_patch_to_disk(
+        self,
+        source_agent_id: str,
+        repo: str,
+        rel_path: str,
+        symbol_name: str,
+        new_symbol_code: str,
+        action: str = "upsert",
+        imports: Optional[List[str]] = None,
+        created: bool = False,
+        source_path: str = "",
+    ) -> bool:
         """
         Applies a non-conflicting AST patch to physical repositories on disk across the session workspace.
+        Never overwrites the exact source_path that originated a local edit.
         """
         applied_any = False
+        src_norm = os.path.normcase(str(Path(source_path).resolve())) if source_path else ""
+        src_node = self.nodes.get(source_agent_id)
+        is_local_edit = bool(src_node and src_node.source == "local")
+
         target_roots = []
         if self.workspace and Path(self.workspace).is_dir():
             target_roots.append(self.workspace)
@@ -2115,22 +2219,42 @@ class MeshCluster:
                 if r.get("root") and r["root"] not in target_roots and Path(r["root"]).is_dir():
                     target_roots.append(r["root"])
 
+        seen_targets = set()
         for root in target_roots:
             candidates = [
                 Path(root) / rel_path,
                 Path(root) / repo / rel_path if repo else None,
             ]
             for p in candidates:
-                if p and p.is_file() and p.suffix == ".py":
-                    try:
-                        content = p.read_text(encoding="utf-8")
-                        patched = ASTEngine.patch_source(content, symbol_name, new_symbol_code)
-                        if patched != content:
-                            p.write_text(patched, encoding="utf-8")
-                            applied_any = True
-                            self.log_event("PATCH-SYNC", f"Applied AST patch for '{symbol_name}' to {p.name}")
-                    except Exception as e:
-                        self.log_event("PATCH-ERROR", f"Failed to patch {p}: {e}")
+                if not p or p.suffix != ".py":
+                    continue
+                resolved = os.path.normcase(str(p.resolve()))
+                if resolved in seen_targets:
+                    continue
+                if src_norm and resolved == src_norm:
+                    continue
+                # If edit came from a local agent on this machine and source_path wasn't provided, don't self-overwrite the main repo copy
+                if is_local_edit and not src_norm and p.is_file():
+                    continue
+                if not p.is_file():
+                    if not created or action == "delete":
+                        continue
+                    # Only create new file if parent repo root exists
+                    repo_base = Path(root) / repo if (repo and (Path(root) / repo).is_dir()) else (Path(root) if (Path(root) / ".git").exists() else None)
+                    if not repo_base or not str(p.resolve()).startswith(str(repo_base.resolve())):
+                        continue
+                seen_targets.add(resolved)
+                try:
+                    content = p.read_text(encoding="utf-8") if p.is_file() else ""
+                    patched = ASTEngine.patch_source(content, symbol_name, new_symbol_code, action=action, imports=imports)
+                    if patched != content:
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_text(patched, encoding="utf-8")
+                        self.watcher.mark_synced(str(p), patched)
+                        applied_any = True
+                        self.log_event("PATCH-SYNC", f"Applied AST {action} for '{symbol_name}' to {p.name}")
+                except Exception as e:
+                    self.log_event("PATCH-ERROR", f"Failed to patch {p}: {e}")
         return applied_any
 
     def coalesce_to_git(self, repo_name: Optional[str] = None) -> List[dict]:
@@ -2202,28 +2326,31 @@ class MeshCluster:
         return path
 
     def scan_repos_for_changes(self) -> List[tuple]:
-        """Poll the tracked repos; return (agent_id, repo, rel, old, new, attribution) for each real edit."""
-        mine = [a for a in self._detected_cache if os.path.normcase(a["workspace"]["path"]) == self.workspace]
+        """Poll the tracked repos; return (agent_id, repo, rel, old, new, attribution, full_path) for each real edit."""
+        mine = [a for a in self._detected_cache if self.in_workspace(a, self.workspace)]
         roots = sorted({r["root"] for a in mine for r in a["workspace"]["repos"] if r.get("root")})
         out = []
         for ch in self.watcher.poll(roots):
             who = agent_detect.attribute_change(ch, mine)
             if not who or who["agent_id"] not in self.nodes:
                 continue
-            out.append((who["agent_id"], Path(ch["repo_root"]).name, ch["rel"], ch["old"], ch["new"], who["_attribution"]))
+            out.append((who["agent_id"], Path(ch["repo_root"]).name, ch["rel"], ch["old"], ch["new"], who["_attribution"], ch["path"]))
         return out
 
     async def live_tick(self) -> None:
         agents = await asyncio.to_thread(agent_detect.detect_agents)
         self.last_scan = time.time()
         self.sync_detected(agents)
-        for aid, repo, rel, old, new, how in await asyncio.to_thread(self.scan_repos_for_changes):
-            self.record_file_change(aid, repo, rel, old, new, how)
+        for item in await asyncio.to_thread(self.scan_repos_for_changes):
+            aid, repo, rel, old, new, how = item[:6]
+            src_path = item[6] if len(item) > 6 else ""
+            self.record_file_change(aid, repo, rel, old, new, how, source_path=src_path)
 
-        # Auto-coalesce to real git when idle for 15s after absorbing mutations
-        pending = self.metrics.get("micro_mutations_absorbed", 0) - self.last_coalesced_mutations
-        if pending > 0 and self.last_file_edit_ts > 0 and (time.time() - self.last_file_edit_ts >= 15.0):
-            await asyncio.to_thread(self.coalesce_to_git)
+        # Auto-coalesce to real git when idle for 15s only if GITPULSE_AUTO_COMMIT=1 is set
+        if os.environ.get("GITPULSE_AUTO_COMMIT") == "1":
+            pending = self.metrics.get("micro_mutations_absorbed", 0) - self.last_coalesced_mutations
+            if pending > 0 and self.last_file_edit_ts > 0 and (time.time() - self.last_file_edit_ts >= 15.0):
+                await asyncio.to_thread(self.coalesce_to_git)
 
         await self.broadcast_ui()
 
@@ -2528,7 +2655,9 @@ async def unregister_agent_endpoint(agent_id: str):
 
 
 @app.post("/api/agents/gossip")
-async def gossip_endpoint(req: GossipIdeaRequest):
+async def gossip_endpoint(req: GossipIdeaRequest, request: Request):
+    if req.session and req.session != SESSION_CODE and not _is_local_request(request):
+        return JSONResponse({"status": "error", "detail": "bad session code"}, status_code=403)
     res = await mesh.broadcast_idea_or_gossip(
         agent_id=req.agent_id,
         intent=req.intent,
@@ -2549,7 +2678,7 @@ async def get_agent_client_script():
 
 FORWARD_HEADERS = ("cf-connecting-ip", "x-forwarded-for", "x-real-ip", "forwarded")
 # Endpoints a joining machine's script/hook calls. Each checks the session code itself.
-AGENT_PATHS = ("/api/agents/register", "/api/agents/file_change", "/api/agents/inbox/pull")
+AGENT_PATHS = ("/api/agents/register", "/api/agents/file_change", "/api/agents/inbox/pull", "/api/agents/patches/pull", "/api/agents/gossip")
 PUBLIC_GET = ("/agent_client.py", "/agent_detect.py", "/gitpulse_hook.py", "/manifest.json", "/favicon.ico")
 
 
@@ -2626,7 +2755,7 @@ def _join_ps1(base: str) -> str:
         "if (-not (Test-Path $py)) { & $uv venv -q --python 3.12 $v }\n"
         "& $uv pip install -q --python $py psutil\n"
         "if ($LASTEXITCODE -ne 0) { Write-Host '[GitPulse] could not install psutil.' -ForegroundColor Red; return }\n"
-        f"& $py (Join-Path $d 'agent_client.py') --server $u --session {SESSION_CODE} --watch\n"
+        f"& $py (Join-Path $d 'agent_client.py') --server $u --session {SESSION_CODE} --watch --install-hooks\n"
     )
 
 
@@ -2645,7 +2774,7 @@ def _join_sh(base: str) -> str:
         'fi\n'
         '[ -x "$D/venv/bin/python" ] || "$D/uv" venv -q --python 3.12 "$D/venv"\n'
         '"$D/uv" pip install -q --python "$D/venv/bin/python" psutil\n'
-        f'exec "$D/venv/bin/python" "$D/agent_client.py" --server "$U" --session {SESSION_CODE} --watch </dev/tty\n'
+        f'exec "$D/venv/bin/python" "$D/agent_client.py" --server "$U" --session {SESSION_CODE} --watch --install-hooks </dev/tty\n'
     )
 
 
@@ -2795,6 +2924,17 @@ async def inbox_pull_endpoint(req: InboxPullRequest, request: Request):
     items = mesh.pull_inbox(req.claude_session_id, req.engine, req.machine, req.cwd)
     if items is None:
         return {"status": "unknown_session", "items": []}
+    if items:
+        await mesh.broadcast_ui()
+    return {"status": "ok", "items": items}
+
+
+@app.post("/api/agents/patches/pull")
+async def patches_pull_endpoint(req: InboxPullRequest, request: Request):
+    """Called by agent_client.py background watcher to sync AST patches to disk without consuming LLM hook inbox items."""
+    if req.session != SESSION_CODE and not _is_local_request(request):
+        return JSONResponse({"status": "error", "detail": "bad session code"}, status_code=403)
+    items = mesh.pull_patches(req.machine)
     if items:
         await mesh.broadcast_ui()
     return {"status": "ok", "items": items}
