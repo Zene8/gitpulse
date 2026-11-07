@@ -419,25 +419,19 @@ function bend(a, c, b, steps = 10) {
   return out;
 }
 
-// A machine is a rounded card: a small name chip with its agents' circles around it.
-// Up to 3 agents sit in one row under the chip; more split into a row above and a row below.
-// When names would collide, the whole machine drops them and its circles pack closer.
+// A machine is a rounded card: machine chip at the top, and agents arranged in a horizontal row below it.
 function discFor(nodes) {
-  const { nodeR, nodeGap, tightNodeGap, maxNamedPerRow, labelH, chipW, chipH, rowGap, cardPad } = NET;
+  const { nodeR, nodeGap, tightNodeGap, labelH, chipW, chipH, rowGap, cardPad } = NET;
   const n = nodes.length;
-  const twoRows = n > 3;
-  const top = twoRows ? Math.ceil(n / 2) : 0;
-  const rows = twoRows ? [nodes.slice(0, top), nodes.slice(top)] : [nodes];
   const roomy = 2 * nodeR + nodeGap;
   const nameW = (x) => textW(x.label, 10.5, 600);
-  const named = rows.every((r) => r.length <= maxNamedPerRow
-    && r.every((x, i) => !i || (nameW(r[i - 1]) + nameW(x)) / 2 <= roomy - 6));
+  const named = nodes.every((x, i) => !i || (nameW(nodes[i - 1]) + nameW(x)) / 2 <= roomy - 6);
   const cell = named ? roomy : 2 * nodeR + tightNodeGap;
-  const hw = Math.max(Math.max(...rows.map((r) => r.length), 1) * cell, chipW) / 2 + cardPad;
-  const row = 2 * nodeR + (named ? labelH : 0) + rowGap;
-  const hh = (chipH + rows.length * row + 2 * cardPad) / 2;
-  const chipY = twoRows ? 0 : -hh + cardPad + chipH / 2;
-  return cardShape(hw, hh, { n, twoRows, chipY, cell, named, top });
+  const hw = Math.max(Math.max(n, 1) * cell, chipW) / 2 + cardPad + 6;
+  const agentRowH = 2 * nodeR + (named ? labelH : 0);
+  const hh = (chipH + rowGap + agentRowH + 2 * cardPad) / 2;
+  const chipY = -hh + cardPad + chipH / 2;
+  return cardShape(hw, hh, { n, chipY, cell, named });
 }
 const cardShape = (hw, hh, extra) => ({ ...extra, hw, hh, rx: NET.cardR });
 
@@ -571,26 +565,23 @@ function renderNet(nodes, st) {
       <text x="${r1(d.x)}" y="${r1(cy + 4)}" text-anchor="middle" font-size="11"><tspan fill="${fg}" font-weight="600">${esc(fit(shown, 11, 600, chipW - 14 - textW(status, 11, 500)))}</tspan><tspan class="num" fill="${host ? con : mute}" font-weight="500">${esc(status)}</tspan></text>
     </g>`;
 
-    const { cell, top } = d;
+    const { cell } = d;
     g.nodes.forEach((x, i) => {
-      const above = i < top;
-      const inRow = above ? top : g.nodes.length - top;
-      const col = above ? i : i - top;
-      const ax = r1(d.x + (col - (inRow - 1) / 2) * cell);
-      const ay = r1(cy + (above ? -1 : 1) * (chipH / 2 + rowGap + nodeR));
+      const ax = r1(d.x + (i - (g.nodes.length - 1) / 2) * cell);
+      const ay = r1(cy + chipH / 2 + rowGap + nodeR);
       routes[x.agent_id] = [[ax, ay], [d.x, cy], ...link.slice().reverse()];
 
       const sx = Math.max(d.x - chipW / 2 + 16, Math.min(d.x + chipW / 2 - 16, ax));
-      const sy = cy + (above ? -1 : 1) * chipH / 2;
+      const sy = cy + chipH / 2;
       const len = Math.hypot(ax - sx, ay - sy);
-      spokes += `<path d="${pathOf([[sx, sy], [ax - nodeR * (ax - sx) / len, ay - nodeR * (ay - sy) / len]])}" fill="none" stroke="${line2}" stroke-width="1" opacity="${x.online ? 1 : .45}" />`;
+      spokes += `<path d="${pathOf([[sx, sy], [ax - nodeR * (ax - sx) / (len || 1), ay - nodeR * (ay - sy) / (len || 1)]])}" fill="none" stroke="${line2}" stroke-width="1" opacity="${x.online ? 1 : .45}" />`;
 
       const isSelected = selectedAgentId === x.agent_id;
       const sent = flows.filter((f) => f.source === x.agent_id && f.kind === 'contract').length;
       const recv = (x.inbox || []).length;
       const rx = rxText(x);
       const rxColor = x.delivery === 'hook' ? (x.hook_last_pull ? ok : warn) : x.delivery === 'no_hook' ? warn : dim;
-      const nameY = above ? ay - nodeR - 19 : ay + nodeR + 13;  // labels sit on the side away from the chip
+      const nameY = r1(ay + nodeR + 13);
       const idle = `↑${sent} ↓${recv}`;
       const id = esc(x.agent_id);
 
@@ -600,7 +591,7 @@ function renderNet(nodes, st) {
         <circle id="agent-tile-${id}" class="agent-base" cx="${ax}" cy="${ay}" r="${nodeR}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : x.color || dim}" stroke-width="1.5" />
         <text x="${ax}" y="${r1(ay + 4)}" text-anchor="middle" fill="${fg}" font-size="11" font-weight="600">${esc(initials(x))}</text>
         <circle cx="${r1(ax + 14)}" cy="${r1(ay + 14)}" r="4.5" fill="${rxColor}" stroke="${panel}" stroke-width="1.5" />
-        ${d.named ? `<text x="${ax}" y="${r1(nameY)}" text-anchor="middle" fill="${fg}" font-size="10.5" font-weight="600">${esc(fit(x.label, 10.5, 600, cell + 16))}</text>
+        ${d.named ? `<text x="${ax}" y="${nameY}" text-anchor="middle" fill="${fg}" font-size="10.5" font-weight="600">${esc(fit(x.label, 10.5, 600, cell + 16))}</text>
         <text class="num" data-state="${id}" data-idle="${idle}" x="${ax}" y="${r1(nameY + 13)}" text-anchor="middle" fill="${mute}" font-size="10" font-weight="500">${idle}</text>` : ''}
       </g>`;
     });
@@ -612,7 +603,7 @@ function renderNet(nodes, st) {
     <title>GitPulse AST Relay on ${esc(st.host_machine || '')}. Function bodies stay private (0 B); changed signatures pass here.</title>
     <circle r="${hubR + 9}" fill="none" stroke="${line}" stroke-width="1" />
     <circle r="${hubR}" fill="${panel}" stroke="${con}" stroke-width="1.5" />
-    <text y="${lift + 6}" text-anchor="middle" fill="${fg}" font-size="16" font-weight="600">${esc(fit(code, 16, 600, 72))}</text>
+    <text y="${lift + 6}" text-anchor="middle" fill="${fg}" font-size="14" font-weight="600">Relay</text>
   </g>`;
 
   if (st.takeover_from) {
