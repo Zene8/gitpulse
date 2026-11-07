@@ -4,3 +4,5 @@ __pycache__/
 workspace_repo/
 mesh_state.db*
 .gitpulse/
+HANDOFF.md
+

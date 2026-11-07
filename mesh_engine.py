@@ -1,10 +1,14 @@
 from pathlib import Path
-import ast, asyncio, difflib, hashlib, json, socket, sqlite3, subprocess, sys, time
+import ast, asyncio, atexit, difflib, hashlib, json, os, platform, re, secrets, shutil, socket, sqlite3, subprocess, sys, threading, time
+import urllib.request
 from typing import Dict, List, Optional, Set, Tuple
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
+
+import agent_detect
+import gitpulse_hook
 
 app = FastAPI(title="GitPulse // Distributed AST-CRDT Mesh, 3-Way Merger & Leaderless Failover")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -12,6 +16,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 BASE_DIR = Path(__file__).parent
 WORKSPACE_REPO = BASE_DIR / "workspace_repo"
 DB_PATH = BASE_DIR / "mesh_state.db"
+PORT = int(os.environ.get("GITPULSE_PORT", "8000"))
+# Join code for this host's session. Anyone with the join link can add their agents.
+SESSION_CODE = os.environ.get("GITPULSE_SESSION") or secrets.token_hex(3)
+DEMO_MODE = "--demo" in sys.argv or os.environ.get("GITPULSE_DEMO") == "1"
+# Folder whose agents this session tracks ("auto" = the folder with the most running agents).
+WORKSPACE_ARG = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--workspace=")), os.environ.get("GITPULSE_WORKSPACE", "auto"))
 
 
 def get_lan_ip() -> str:
@@ -35,6 +45,142 @@ def get_lan_ip() -> str:
     return "127.0.0.1"
 
 
+def tailscale_ip() -> str:
+    try:
+        import psutil
+        for addrs in psutil.net_if_addrs().values():
+            for a in addrs:
+                if a.family == socket.AF_INET and a.address.startswith("100.") and 64 <= int(a.address.split(".")[1]) <= 127:
+                    return a.address
+    except Exception:
+        pass
+    return ""
+
+
+HOST_MACHINE = socket.gethostname()
+# Set when this server was started by a watcher taking over from a host that went away.
+TAKEOVER_FROM = os.environ.get("GITPULSE_TAKEOVER", "")
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+_net_cache: dict = {"t": 0.0, "v": {}}
+
+
+def network_info() -> dict:
+    """Wi-Fi name + whether it is the kind of network that blocks device-to-device traffic."""
+    if time.time() - _net_cache["t"] < 30:
+        return _net_cache["v"]
+    ssid = ""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True,
+                                 timeout=3, creationflags=_NO_WINDOW).stdout
+            m = re.search(r"^\s*SSID\s*:\s*(.+?)\s*$", out, re.M)
+            ssid = m.group(1) if m else ""
+        elif sys.platform.startswith("linux"):
+            ssid = subprocess.run(["iwgetid", "-r"], capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception:
+        pass
+    low = ssid.lower()
+    isolated = any(k in low for k in ("eduroam", "govroam", "guest", "public", "hotel", "airport", "cafe", "starbucks", "uni"))
+    _net_cache.update(t=time.time(), v={"ssid": ssid, "likely_isolated": isolated})
+    return _net_cache["v"]
+
+
+class Tunnel:
+    """Free public https link via a Cloudflare quick tunnel (no account). Needed on eduroam & co."""
+
+    def __init__(self):
+        self.url = ""
+        self.status = "off"  # off | downloading | starting | on | error
+        self.error = ""
+        self.proc: Optional[subprocess.Popen] = None
+
+    @staticmethod
+    def _exe_name() -> str:
+        return "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
+
+    def _find(self) -> str:
+        found = shutil.which("cloudflared")
+        if found:
+            return found
+        for c in (
+            Path.home() / ".gitpulse" / self._exe_name(),
+            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "cloudflared" / "cloudflared.exe",
+            Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "cloudflared" / "cloudflared.exe",
+        ):
+            if c.is_file():
+                return str(c)
+        return ""
+
+    def _download(self) -> str:
+        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+        if sys.platform == "win32":
+            asset = "cloudflared-windows-amd64.exe"
+        elif sys.platform.startswith("linux"):
+            asset = f"cloudflared-linux-{arch}"
+        else:
+            raise RuntimeError("cloudflared not found. Install it with: brew install cloudflared")
+        dest = Path.home() / ".gitpulse" / self._exe_name()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".part")
+        self.status = "downloading"
+        urllib.request.urlretrieve(f"https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}", tmp)
+        tmp.replace(dest)
+        dest.chmod(0o755)
+        return str(dest)
+
+    def start(self) -> None:
+        """Blocking; run in a thread."""
+        if self.status in ("downloading", "starting", "on"):
+            return
+        self.error = ""
+        self.status = "starting"
+        try:
+            exe = self._find() or self._download()
+            self.status = "starting"
+            self.proc = subprocess.Popen(
+                [exe, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=_NO_WINDOW,
+            )
+            deadline = time.time() + 45
+            for line in self.proc.stdout:
+                m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
+                if m:
+                    self.url = m.group(0)
+                    self.status = "on"
+                    threading.Thread(target=self._drain, daemon=True).start()
+                    return
+                if time.time() > deadline:
+                    raise RuntimeError("cloudflared gave no link within 45 s")
+            raise RuntimeError("cloudflared exited before giving a link")
+        except Exception as e:
+            self.stop()
+            self.status = "error"
+            self.error = str(e)
+
+    def _drain(self) -> None:
+        proc = self.proc
+        try:
+            for _ in proc.stdout:
+                pass
+        except Exception:
+            pass
+        if self.proc is proc:
+            self.url, self.status, self.proc = "", "off", None
+
+    def stop(self) -> None:
+        proc, self.proc = self.proc, None
+        self.url, self.status = "", "off"
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+    def info(self) -> dict:
+        return {"status": self.status, "url": self.url, "error": self.error}
+
+
+TUNNEL = Tunnel()
+atexit.register(TUNNEL.stop)
+
+
 # =====================================================================
 # 1. DATA MODELS & CAUSAL VECTOR CLOCK ORDERING
 # =====================================================================
@@ -48,6 +194,17 @@ class RegisterAgentRequest(BaseModel):
     engine: str = "Custom"
     machine: str = ""
     branch: str = "main"
+    session: str = ""
+    meta: dict = {}
+
+
+class FileChangeRequest(BaseModel):
+    agent_id: str
+    session: str = ""
+    path: str
+    repo: str = ""
+    old_code: str = ""
+    new_code: str
 
 
 class GossipIdeaRequest(BaseModel):
@@ -418,6 +575,12 @@ class AgentNode:
         self.known_peer_symbols: Dict[str, ASTSymbol] = {}
         self.local_symbols: Dict[str, ASTSymbol] = ASTEngine.extract_symbols(initial_code, agent_id)
         self.merkle_root: str = ASTEngine.compute_merkle_root(self.local_symbols)
+        # Live-detection info (pid, cwd, workspace repos, session title, files touched ...)
+        self.meta: dict = {}
+        self.inbox: List[dict] = []  # contracts received from peers
+        self.last_seen: float = time.time()
+        self.hook_last_pull: float = 0.0
+        self.source: str = "demo"  # "local" (detected here) | "remote" (joined via link) | "demo"
 
     def mutate_code(self, new_code: str, intent_desc: str, base_commit_id: Optional[str]) -> Tuple[GossipPacket, bool]:
         self.vector_clock[self.agent_id] = self.vector_clock.get(self.agent_id, 0) + 1
@@ -482,11 +645,12 @@ class AgentNode:
 # =====================================================================
 
 class MeshCluster:
-    def __init__(self):
+    def __init__(self, demo: bool = True):
         self.term: int = 1
-        self.leader_id: str = "agent-auth"
+        self.demo = demo
+        self.leader_id: str = "agent-auth" if demo else ""
         host_machine = socket.gethostname()
-        self.nodes: Dict[str, AgentNode] = {
+        self.nodes: Dict[str, AgentNode] = {} if not demo else {
             "agent-auth": AgentNode(
                 "agent-auth",
                 "Auth & Identity Service",
@@ -521,7 +685,8 @@ class MeshCluster:
                 branch="feat/edge-router",
             ),
         }
-        self.nodes["agent-auth"].is_leader = True
+        if demo:
+            self.nodes["agent-auth"].is_leader = True
 
         for src_id, src in self.nodes.items():
             for dst_id, dst in self.nodes.items():
@@ -545,6 +710,13 @@ class MeshCluster:
             "bytes_saved": 0,
         }
         self.ws_clients: Set[WebSocket] = set()
+        # Live mode state
+        self.flows: List[dict] = []          # plain-English "what got passed" feed
+        self.workspace: str = ""             # folder being tracked
+        self.other_agents: List[dict] = []   # agents running elsewhere on this machine
+        self.watcher = agent_detect.RepoWatcher()
+        self._detected_cache: List[dict] = []
+        self.known_machines: Dict[str, float] = {}  # machine name -> first seen
         self._init_sqlite_wal()
         self._init_workspace_git()
         self._record_dag("system", "EPOCH-FLUSH", "Genesis AST mesh snapshot")
@@ -632,6 +804,14 @@ class MeshCluster:
                 f"{node.engine} @ {node.machine} [{node.branch}]",
                 diff=f"+ agent {agent_id} ({node.engine} // {node.branch})",
             )
+
+        node.last_seen = time.time()
+        leader = self.nodes.get(self.leader_id)
+        if leader is None or not leader.online:
+            for n in self.nodes.values():
+                n.is_leader = False
+            node.is_leader = True
+            self.leader_id = agent_id
 
         self._emit_bubble(
             source=agent_id,
@@ -830,14 +1010,66 @@ class MeshCluster:
         )
         return winner.agent_id
 
-    async def broadcast_ui(self):
+    def workspace_repos(self) -> List[dict]:
+        for a in self._detected_cache:
+            if os.path.normcase(a["workspace"]["path"]) == self.workspace:
+                return a["workspace"]["repos"]
+        return []
+
+    def machines(self) -> List[dict]:
+        out: Dict[str, dict] = {}
+        for k, n in self.nodes.items():
+            if n.source == "demo":
+                continue
+            m = out.setdefault(n.machine, {
+                "name": n.machine, "is_host": n.machine == HOST_MACHINE, "ip": "", "agents": [],
+                "online": 0, "joined": self.known_machines.get(n.machine, n.last_seen),
+            })
+            m["agents"].append(k)
+            m["online"] += 1 if n.online else 0
+            m["ip"] = m["ip"] or (n.meta.get("ip") or "")
+        return sorted(out.values(), key=lambda m: (not m["is_host"], m["joined"]))
+
+    def succession(self) -> List[dict]:
+        """Who takes over if this host goes away: joined machines that are online, in join order,
+        with every address the host has seen for them."""
+        out = []
+        for m in self.machines():
+            if m["is_host"] or not m["online"]:
+                continue
+            addrs: List[str] = []
+            for k in m["agents"]:
+                meta = self.nodes[k].meta
+                for ip in [*(meta.get("addrs") or []), meta.get("ip") or ""]:
+                    if ip and not ip.startswith("127.") and ip not in addrs:
+                        addrs.append(ip)
+            out.append({"machine": m["name"], "addrs": addrs})
+        return out
+
+    def ui_state(self) -> dict:
         lan_ip = get_lan_ip()
-        state = {
-            "lan": {
-                "ip": lan_ip,
-                "port": 8000,
-                "url": f"http://{lan_ip}:8000",
-                "ws_url": f"ws://{lan_ip}:8000/ws",
+        base = f"http://{lan_ip}:{PORT}"
+        ws_name = Path(self.workspace).name if self.workspace else ""
+        tun = TUNNEL.info()
+        return {
+            "host_machine": HOST_MACHINE,
+            "last_scan": getattr(self, "last_scan", 0),
+            "scan_every": 3,
+            "machines": self.machines(),
+            "succession": [x["machine"] for x in self.succession()],
+            "takeover_from": TAKEOVER_FROM,
+            "tunnel": tun,
+            "network": {**network_info(), "lan_ip": lan_ip, "tailscale_ip": tailscale_ip()},
+            "public_join_url": f"{tun['url']}/join/{SESSION_CODE}" if tun["url"] else "",
+            "demo": all(k in self.nodes for k in ("agent-auth", "agent-billing", "agent-gateway")),
+            "lan": {"ip": lan_ip, "port": PORT, "url": base, "ws_url": f"ws://{lan_ip}:{PORT}/ws"},
+            "session": {
+                "code": SESSION_CODE,
+                "join_url": f"{base}/join/{SESSION_CODE}",
+                "host": HOST_MACHINE,
+                "workspace": self.workspace,
+                "workspace_name": ws_name,
+                "repos": self.workspace_repos(),
             },
             "cluster": {
                 "term": self.term,
@@ -847,6 +1079,8 @@ class MeshCluster:
             "nodes": {
                 k: {
                     "agent_id": n.agent_id,
+                    "label": self.agent_label(k),
+                    "source": n.source,
                     "role": n.role,
                     "target_module": n.target_module,
                     "deps": n.deps,
@@ -864,11 +1098,19 @@ class MeshCluster:
                     "vector_clock": n.vector_clock,
                     "local_micro_commits": n.local_micro_commits,
                     "outbox_size": len(n.outbox_queue),
-                    "symbols": [s.model_dump() for s in n.local_symbols.values()],
-                    "code": n.code,
+                    "symbols": [s.model_dump() for s in n.local_symbols.values()][:40],
+                    "code": n.code if n.source == "demo" else "",
+                    "meta": {k2: v for k2, v in n.meta.items() if k2 != "workspace"},
+                    "inbox": n.inbox[-6:],
+                    "pending": sum(1 for x in n.inbox if not x.get("delivered")),
+                    "delivery": self.delivery_mode(n),
+                    "hook_last_pull": n.hook_last_pull,
+                    "last_seen": n.last_seen,
                 }
                 for k, n in self.nodes.items()
             },
+            "other_agents": self.other_agents,
+            "flows": self.flows[-40:],
             "metrics": self.metrics,
             "events": self.events[-30:],
             "dag": [c.model_dump() for c in self.dag[-16:]],
@@ -876,6 +1118,9 @@ class MeshCluster:
             "beam": self.last_gossip_beam,
             "bubbles": self.active_bubbles[-30:],
         }
+
+    async def broadcast_ui(self):
+        state = self.ui_state()
         dead = set()
         for ws in self.ws_clients:
             try:
@@ -1256,92 +1501,317 @@ class MeshCluster:
         )
         return {"status": "ok", "agent_id": agent_id, "engine": node.engine, "branch": node.branch}
 
-    async def scan_and_prompt_agents(self) -> dict:
+    # ------------------------------------------------------------------ live mode
+
+    def agent_label(self, agent_id: str) -> str:
+        n = self.nodes.get(agent_id)
+        if not n:
+            return agent_id
+        same = [x for x in self.nodes.values() if x.engine == n.engine and x.machine == n.machine]
+        if len(same) <= 1:
+            return n.engine
+        same.sort(key=lambda x: (x.meta.get("started") or 0, x.agent_id))
+        return f"{n.engine} #{same.index(n) + 1}"
+
+    def _pick_workspace(self, agents: List[dict]) -> str:
+        if WORKSPACE_ARG and WORKSPACE_ARG != "auto":
+            return os.path.normcase(str(Path(WORKSPACE_ARG).resolve()))
+        if self.workspace:
+            return self.workspace
+        counts: Dict[str, int] = {}
+        for a in agents:
+            k = os.path.normcase(a["workspace"]["path"])
+            counts[k] = counts.get(k, 0) + 1
+        if not counts:
+            return ""
+        return max(counts, key=lambda k: counts[k])
+
+    @staticmethod
+    def delivery_mode(n: "AgentNode") -> str:
+        """How (and whether) this agent can really receive updates."""
+        if n.engine not in ("Claude Code", "Antigravity"):
+            return "unsupported"
+        if getattr(n, "hook_last_pull", 0) or n.meta.get("hook_installed"):
+            return "hook"
+        return "no_hook"
+
+    def upsert_live_agent(self, a: dict, source: str) -> AgentNode:
+        """Register / refresh one really-detected agent (local scan or a joined peer)."""
+        aid = a["agent_id"]
+        repos = (a.get("workspace") or {}).get("repos") or []
+        branch = ", ".join(f"{r['name']}:{r['branch']}" for r in repos) or "no git"
+        machine = a.get("machine") or HOST_MACHINE
+        is_new = aid not in self.nodes
+        if machine not in self.known_machines:
+            self.known_machines[machine] = time.time()
+            if source == "local":
+                self._flow("machine", aid, [], summary=f"Session started on {machine} (host)",
+                           detail="This machine runs the GitPulse server. Other machines join with the invite link.", machine=machine)
+            else:
+                self._flow("machine", aid, [], summary=f"New machine joined: {machine}",
+                           detail=f"from {a.get('ip') or 'unknown address'}", machine=machine)
+        if is_new:
+            self.register_agent(
+                agent_id=aid,
+                role=a.get("title") or a.get("engine", "Agent"),
+                target_module=f"live/{aid}.py",
+                initial_code="# live agent\n",
+                engine=a.get("engine", "Agent"),
+                machine=machine,
+                branch=branch,
+            )
+        node = self.nodes[aid]
+        came_back = not node.online
+        node.online = True
+        node.source = source
+        node.branch = branch
+        node.machine = machine
+        node.color = a.get("color") or node.color
+        node.last_seen = time.time()
+        node.meta = {k: a.get(k) for k in ("pid", "cwd", "workspace", "status", "title", "last_prompt", "files",
+                                            "last_active", "started", "session_id", "hook_installed", "ip", "kind", "addrs")}
+        node.last_prompt = a.get("last_prompt") or ""
+        if not self.nodes.get(self.leader_id) or not self.nodes[self.leader_id].online:
+            for n in self.nodes.values():
+                n.is_leader = False
+            node.is_leader = True
+            self.leader_id = aid
+        if is_new:
+            self._flow("join", aid, [], summary=f"New agent on {machine}: {self.agent_label(aid)}", detail=branch, machine=machine)
+        elif came_back:
+            self._flow("join", aid, [], summary=f"{self.agent_label(aid)} on {machine} is back", detail=branch, machine=machine)
+        return node
+
+    def online_machines(self) -> Set[str]:
+        return {n.machine for n in self.nodes.values() if n.online and n.source != "demo"}
+
+    @staticmethod
+    def in_workspace(a: dict, ws: str) -> bool:
+        """Agent works in the session folder or anywhere below it (e.g. started inside one of its repos)."""
+        if not ws:
+            return False
+        p = os.path.normcase(os.path.abspath(a.get("cwd") or a["workspace"]["path"]))
+        return p == ws or p.startswith(ws.rstrip("\/") + os.sep)
+
+    def sync_detected(self, agents: List[dict]) -> bool:
+        """Apply a local process scan. Returns True if anything visible changed."""
+        self._detected_cache = agents
+        ws = self._pick_workspace(agents)
+        self.workspace = ws
+        mine = [a for a in agents if self.in_workspace(a, ws)]
+        self.other_agents = [
+            {"engine": a["engine"], "pid": a["pid"], "cwd": a["cwd"], "color": a["color"]}
+            for a in agents if not self.in_workspace(a, ws)
+        ]
+        before = {k: (n.online, n.meta.get("status")) for k, n in self.nodes.items()}
+        machines_before = self.online_machines()
+        seen = set()
+        for a in mine:
+            if a["engine"] in ("Claude Code", "Antigravity"):
+                a["hook_installed"] = gitpulse_hook.installed_for(a["engine"], a["cwd"])
+            self.upsert_live_agent(a, "local")
+            seen.add(a["agent_id"])
+        now = time.time()
+        for aid, n in self.nodes.items():
+            gone = (n.source == "local" and aid not in seen) or (n.source == "remote" and now - n.last_seen > 20)
+            if gone and n.online:
+                n.online = False
+                self._flow("leave", aid, [], summary=f"{self.agent_label(aid)} on {n.machine} stopped", machine=n.machine)
+                if n.is_leader:
+                    self.elect_new_leader()
+        for m in machines_before - self.online_machines():
+            self._flow("machine_left", "", [], summary=f"Machine {m} disconnected", machine=m)
+        after = {k: (n.online, n.meta.get("status")) for k, n in self.nodes.items()}
+        return before != after
+
+    def _flow(self, kind: str, source: str, targets: List[str], summary: str, detail: str = "", **extra) -> dict:
+        f = {
+            "id": hashlib.sha256(f"{source}:{kind}:{time.time_ns()}".encode()).hexdigest()[:8],
+            "ts": time.time(),
+            "time": time.strftime("%H:%M:%S"),
+            "kind": kind,
+            "source": source,
+            "targets": targets,
+            "summary": summary,
+            "detail": detail,
+            **extra,
+        }
+        self.flows.append(f)
+        self.flows = self.flows[-80:]
+        return f
+
+    def record_file_change(self, agent_id: str, repo: str, rel_path: str, old: str, new: str, attribution: str = "transcript") -> dict:
         """
-        Auto-detects active coding agents (Antigravity, Claude Code, Codex, Cursor, Aider)
-        and active Git branches/worktrees on this machine + LAN, registers them, and prompts all active agents for updates.
+        The core idea, applied to real edits: diff the file's AST.
+        - only function bodies changed            -> private edit, nothing sent to peers
+        - a signature / class / constant changed  -> queue just that contract for every peer
+        Peers actually get it when their Claude Code hook pulls it (see pull_inbox).
         """
-        home = Path.home()
-        hostname = socket.gethostname()
-        detected = []
+        node = self.nodes[agent_id]
+        old_syms = ASTEngine.extract_symbols(old, agent_id)
+        new_syms = ASTEngine.extract_symbols(new, agent_id)
+        added = [k for k in new_syms if k not in old_syms]
+        removed = [k for k in old_syms if k not in new_syms]
+        sig_changed = [k for k in new_syms if k in old_syms and new_syms[k].signature_hash != old_syms[k].signature_hash]
+        body_changed = [k for k in new_syms if k in old_syms and k not in sig_changed and new_syms[k].body_hash != old_syms[k].body_hash]
+        contract = added + sig_changed + removed
 
-        # 1. Inspect running processes + local agent runtime directories
-        proc_out = ""
-        try:
-            cmd = ["tasklist"] if sys.platform.startswith("win") else ["ps", "-ef"]
-            proc_out = subprocess.run(cmd, capture_output=True, text=True, timeout=2).stdout.lower()
-        except Exception:
-            pass
+        node.vector_clock[agent_id] = node.vector_clock.get(agent_id, 0) + 1
+        node.local_micro_commits += 1
+        node.intent = f"editing {rel_path}"
+        node.local_symbols = {**node.local_symbols, **{f"{rel_path}:{k}": v for k, v in new_syms.items()}}
+        node.merkle_root = ASTEngine.compute_merkle_root(node.local_symbols)
+        self.metrics["micro_mutations_absorbed"] += 1
+        label = self.agent_label(agent_id)
+        file_bytes = len(new.encode("utf-8"))
+        where = f"{repo}/{rel_path}" if repo else rel_path
 
-        # Detect Antigravity / Claude / Codex / Cursor / Aider + git branches across sibling repos
-        repo_branches = []
-        for candidate_repo in [BASE_DIR, BASE_DIR.parent / "poker_bot", WORKSPACE_REPO]:
-            if (candidate_repo / ".git").exists():
-                try:
-                    br = subprocess.run(
-                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                        cwd=candidate_repo,
-                        capture_output=True,
-                        text=True,
-                        timeout=1,
-                    ).stdout.strip()
-                    status = subprocess.run(
-                        ["git", "status", "--porcelain"],
-                        cwd=candidate_repo,
-                        capture_output=True,
-                        text=True,
-                        timeout=1,
-                    ).stdout.strip()
-                    repo_branches.append((candidate_repo.name, br or "main", len(status.splitlines())))
-                except Exception:
-                    pass
+        if not contract:
+            self.metrics["private_edits_suppressed"] += 1
+            self.metrics["bytes_saved"] += file_bytes
+            names = ", ".join(body_changed[:3]) or "top-level code"
+            self.log_event("LOCAL", f"[{label}] edited inside {names} in {where}. Signatures unchanged, 0 B sent.")
+            return self._flow(
+                "private", agent_id, [],
+                summary=f"{label} edited {names} in {where}",
+                detail="Only code inside functions changed. Other agents don't depend on that, so nothing was sent.",
+                file=where, symbols=body_changed[:6], bytes_sent=0, bytes_saved=file_bytes, attribution=attribution,
+                machine=node.machine,
+            )
 
-        # Ensure detected local agent runtimes / branches are represented & prompted
-        if (home / ".gemini" / "antigravity-cli").exists() or "antigravity" in proc_out:
-            self.nodes["agent-auth"].engine = "Antigravity"
-            self.nodes["agent-auth"].machine = hostname
-            detected.append("Antigravity")
+        peers = [p for p, n in self.nodes.items() if p != agent_id and n.online]
+        lines = []
+        for k in added:
+            lines.append(f"+ {new_syms[k].signature}")
+        for k in sig_changed:
+            lines.append(f"- {old_syms[k].signature}")
+            lines.append(f"+ {new_syms[k].signature}")
+        for k in removed:
+            lines.append(f"- {old_syms[k].signature}")
+        payload = "\n".join(lines)
+        sent = len(payload.encode("utf-8"))
+        self.metrics["gossip_packets_routed"] += 1
+        self.metrics["bytes_saved"] += max(0, file_bytes - sent) * max(1, len(peers))
+        verb = []
+        if sig_changed:
+            verb.append(f"changed the signature of {', '.join(sig_changed[:3])}")
+        if added:
+            verb.append(f"added {', '.join(added[:3])}")
+        if removed:
+            verb.append(f"removed {', '.join(removed[:3])}")
+        summary = f"{label} {' and '.join(verb)} in {where}"
+        flow = self._flow(
+            "contract", agent_id, peers,
+            summary=summary,
+            detail=f"The public interface changed, so it is queued for every other agent ({sent} B instead of the whole {file_bytes} B file).",
+            file=where, contract=lines[:8], bytes_sent=sent, bytes_saved=max(0, file_bytes - sent), attribution=attribution,
+            machine=node.machine, delivery={p: self.delivery_mode(self.nodes[p]) for p in peers},
+        )
+        for p in peers:
+            peer = self.nodes[p]
+            peer.vector_clock = VectorClock.merge(peer.vector_clock, node.vector_clock)
+            peer.inbox.append({"id": secrets.token_hex(4), "flow": flow["id"], "from": agent_id, "file": where,
+                               "contract": lines[:8], "time": time.strftime("%H:%M:%S"), "delivered": ""})
+            peer.inbox = peer.inbox[-20:]
+            for k in added + sig_changed:
+                peer.known_peer_symbols[f"{rel_path}:{k}"] = new_syms[k]
+        self._record_dag(agent_id, "CONTRACT-GOSSIP", summary, diff="\n".join(lines[:3]))
+        self.log_event("GOSSIP", f"{summary}. Queued {sent} B for {len(peers)} peer(s) instead of the {file_bytes} B file.")
+        return flow
 
-        if (home / ".claude").exists() or "claude" in proc_out:
-            self.nodes["agent-billing"].engine = "Claude Code"
-            self.nodes["agent-billing"].machine = hostname
-            detected.append("Claude Code")
+    def _match_hook_caller(self, session_id: str, engine: str, machine: str, cwd: str) -> Optional["AgentNode"]:
+        """Find the agent a hook call belongs to: by session id, else same engine + machine + folder."""
+        if session_id:
+            node = next((n for n in self.nodes.values() if n.meta.get("session_id") == session_id), None)
+            if node is not None:
+                return node
+        if not (engine and cwd):
+            return None
+        want = os.path.normcase(os.path.abspath(cwd)).rstrip("\\/")
+        best = None
+        for n in self.nodes.values():
+            if not n.online or n.engine != engine or (machine and n.machine != machine):
+                continue
+            have = os.path.normcase(os.path.abspath(n.meta.get("cwd") or "")).rstrip("\\/")
+            if not have:
+                continue
+            if have == want or want.startswith(have + os.sep) or have.startswith(want + os.sep):
+                if best is None or n.meta.get("last_active", 0) > best.meta.get("last_active", 0):
+                    best = n
+        return best
 
-        if (home / ".codex").exists() or "codex" in proc_out or "cursor" in proc_out:
-            self.nodes["agent-gateway"].engine = "Codex"
-            self.nodes["agent-gateway"].machine = hostname
-            detected.append("Codex")
+    def pull_inbox(self, claude_session_id: str = "", engine: str = "", machine: str = "", cwd: str = "") -> Optional[List[dict]]:
+        """Called by an agent's hook: hand over undelivered contracts, mark them delivered."""
+        node = self._match_hook_caller(claude_session_id, engine, machine, cwd)
+        if node is None:
+            return None
+        node.hook_last_pull = time.time()
+        pending = [x for x in node.inbox if not x.get("delivered")]
+        if not pending:
+            return []
+        stamp = time.strftime("%H:%M:%S")
+        by_id = {f["id"]: f for f in self.flows}
+        for x in pending:
+            x["delivered"] = stamp
+            f = by_id.get(x.get("flow"))
+            if f is not None:
+                f.setdefault("delivery", {})[node.agent_id] = f"delivered {stamp}"
+        label = self.agent_label(node.agent_id)
+        self._flow(
+            "deliver", node.agent_id, [], summary=f"{label} on {node.machine} received {len(pending)} update{'s' if len(pending) != 1 else ''}",
+            detail=f"Pulled by its {node.engine} hook and added to the agent's context.",
+            contract=[l for x in pending for l in x["contract"]][:8], machine=node.machine,
+        )
+        return [{
+            "from": x["from"], "from_label": self.agent_label(x["from"]),
+            "machine": self.nodes[x["from"]].machine if x["from"] in self.nodes else "?",
+            "file": x["file"], "contract": x["contract"],
+        } for x in pending]
 
-        # If a sibling repo (e.g. poker_bot or feature worktree) is present on disk, auto-register its branch agent if not present
-        for repo_name, br_name, dirty_count in repo_branches:
-            if repo_name == "poker_bot" and "agent-poker" not in self.nodes:
-                model_py = BASE_DIR.parent / "poker_bot" / "model.py"
-                code = (
-                    model_py.read_text(encoding="utf-8")[:400]
-                    if model_py.exists()
-                    else "def play_hand(state: dict) -> str:\n    return 'call'\n"
-                )
-                self.register_agent(
-                    agent_id="agent-poker",
-                    role="Poker Bot Agent",
-                    target_module="poker_bot/model.py",
-                    initial_code=code,
-                    engine="Cursor / Local",
-                    machine=hostname,
-                    branch=f"{repo_name}:{br_name}",
-                )
-                detected.append(f"Branch:{repo_name}/{br_name}")
+    def install_hook(self, agent_id: str) -> str:
+        n = self.nodes[agent_id]
+        path = gitpulse_hook.install_for(n.engine, n.meta["cwd"], f"http://127.0.0.1:{PORT}", SESSION_CODE)
+        for o in self.nodes.values():
+            if o.source == "local" and o.engine == n.engine and o.meta.get("cwd") == n.meta["cwd"]:
+                o.meta["hook_installed"] = True
+        how = ("Antigravity picks it up on its next prompt (the folder must be a trusted workspace)."
+               if n.engine == "Antigravity" else "Restart those Claude Code sessions (or open /hooks in them) so they load it.")
+        self._flow("info", agent_id, [], summary=f"Hook added for {n.engine} in {Path(n.meta['cwd']).name}",
+                   detail=f"Wrote {path}. {how}", machine=n.machine)
+        return path
 
-        # Prompt all online agents for their latest AST diff & branch status
-        prompted = []
-        for aid, node in list(self.nodes.items()):
-            if node.online:
-                await self.prompt_agent(aid)
-                prompted.append(f"{aid}({node.engine}@{node.branch})")
+    def scan_repos_for_changes(self) -> List[tuple]:
+        """Poll the tracked repos; return (agent_id, repo, rel, old, new, attribution) for each real edit."""
+        mine = [a for a in self._detected_cache if os.path.normcase(a["workspace"]["path"]) == self.workspace]
+        roots = sorted({r["root"] for a in mine for r in a["workspace"]["repos"] if r.get("root")})
+        out = []
+        for ch in self.watcher.poll(roots):
+            who = agent_detect.attribute_change(ch, mine)
+            if not who or who["agent_id"] not in self.nodes:
+                continue
+            out.append((who["agent_id"], Path(ch["repo_root"]).name, ch["rel"], ch["old"], ch["new"], who["_attribution"]))
+        return out
 
-        self.log_event("AUTO-SCAN", f"Detected & prompted {len(prompted)} active agents: {', '.join(prompted)}")
+    async def live_tick(self) -> None:
+        agents = await asyncio.to_thread(agent_detect.detect_agents)
+        self.last_scan = time.time()
+        self.sync_detected(agents)
+        for aid, repo, rel, old, new, how in await asyncio.to_thread(self.scan_repos_for_changes):
+            self.record_file_change(aid, repo, rel, old, new, how)
         await self.broadcast_ui()
-        return {"status": "ok", "detected": detected, "prompted": prompted, "branches": repo_branches}
+
+    async def scan_and_prompt_agents(self) -> dict:
+        """Rescan this machine for running coding agents right now."""
+        await self.live_tick()
+        return {
+            "status": "ok",
+            "workspace": self.workspace,
+            "agents": [
+                {"agent_id": k, "engine": n.engine, "pid": n.meta.get("pid"), "online": n.online}
+                for k, n in self.nodes.items() if n.source != "demo"
+            ],
+            "elsewhere": self.other_agents,
+        }
 
     async def atomic_github_flush(self):
         # Ensure we have an active online Coordinator Leader even if prior leader DC'd
@@ -1390,7 +1860,7 @@ class MeshCluster:
         return {"status": "ok", "sha": sha, "leader": self.leader_id, "term": self.term}
 
 
-mesh = MeshCluster()
+mesh = MeshCluster(demo=DEMO_MODE)
 
 SCENARIOS = [
     (
@@ -1420,6 +1890,8 @@ scenario_idx = 0
 @app.post("/api/step")
 async def step_simulation():
     global scenario_idx
+    if not mesh.ui_state()["demo"]:
+        return {"status": "demo_only", "detail": "Start with --demo to use the scripted scenarios."}
     agent_id, code, intent = SCENARIOS[scenario_idx % len(SCENARIOS)]
     scenario_idx += 1
     await mesh.trigger_agent_step(agent_id, code, intent)
@@ -1428,12 +1900,16 @@ async def step_simulation():
 
 @app.post("/api/conflict")
 async def trigger_conflict():
+    if not mesh.ui_state()["demo"]:
+        return {"status": "demo_only", "detail": "Start with --demo to use the scripted scenarios."}
     await mesh.simulate_split_brain_conflict()
     return {"status": "ok"}
 
 
 @app.post("/api/speculate")
 async def trigger_speculation():
+    if not mesh.ui_state()["demo"]:
+        return {"status": "demo_only", "detail": "Start with --demo to use the scripted scenarios."}
     await mesh.run_speculative_race()
     return {"status": "ok"}
 
@@ -1468,43 +1944,16 @@ async def get_lan_endpoint():
     ip = get_lan_ip()
     return {
         "ip": ip,
-        "port": 8000,
-        "url": f"http://{ip}:8000",
-        "ws_url": f"ws://{ip}:8000/ws",
+        "port": PORT,
+        "url": f"http://{ip}:{PORT}",
+        "ws_url": f"ws://{ip}:{PORT}/ws",
         "hostname": socket.gethostname(),
     }
 
 
 @app.get("/api/state")
 async def get_state_endpoint():
-    ip = get_lan_ip()
-    return {
-        "lan": {
-            "ip": ip,
-            "port": 8000,
-            "url": f"http://{ip}:8000",
-            "ws_url": f"ws://{ip}:8000/ws",
-        },
-        "cluster": {"term": mesh.term, "leader_id": mesh.leader_id},
-        "nodes": {
-            k: {
-                "agent_id": n.agent_id,
-                "role": n.role,
-                "target_module": n.target_module,
-                "online": n.online,
-                "is_leader": n.is_leader,
-                "color": getattr(n, "color", "#a78bfa"),
-                "last_gossip": getattr(n, "last_gossip", ""),
-                "vector_clock": n.vector_clock,
-                "local_micro_commits": n.local_micro_commits,
-                "outbox_size": len(n.outbox_queue),
-                "symbols": [s.name for s in n.local_symbols.values()],
-            }
-            for k, n in mesh.nodes.items()
-        },
-        "metrics": mesh.metrics,
-        "bubbles": mesh.active_bubbles[-25:],
-    }
+    return mesh.ui_state()
 
 
 @app.get("/api/agents")
@@ -1528,28 +1977,43 @@ async def list_agents():
 
 
 @app.post("/api/agents/register")
-async def register_agent_endpoint(req: RegisterAgentRequest):
-    node = mesh.register_agent(
-        agent_id=req.agent_id,
-        role=req.role,
-        target_module=req.target_module,
-        initial_code=req.initial_code,
-        deps=req.deps,
-        engine=req.engine,
-        machine=req.machine,
-        branch=req.branch,
-    )
+async def register_agent_endpoint(req: RegisterAgentRequest, request: Request):
+    if req.session != SESSION_CODE and not _is_local_request(request):
+        return JSONResponse({"status": "error", "detail": "bad session code"}, status_code=403)
+    if req.meta.get("agent_id") == req.agent_id and req.meta.get("engine"):
+        req.meta["ip"] = _client_ip(request)
+        node = mesh.upsert_live_agent(req.meta, "remote")
+    else:
+        node = mesh.register_agent(
+            agent_id=req.agent_id,
+            role=req.role,
+            target_module=req.target_module,
+            initial_code=req.initial_code,
+            deps=req.deps,
+            engine=req.engine,
+            machine=req.machine,
+            branch=req.branch,
+        )
+        if node.source == "demo" and not mesh.ui_state()["demo"]:
+            node.source = "remote"
+        node.last_seen = time.time()
     await mesh.broadcast_ui()
     return {
         "status": "ok",
         "agent_id": node.agent_id,
+        "label": mesh.agent_label(node.agent_id),
         "role": node.role,
-        "target_module": node.target_module,
         "engine": node.engine,
         "machine": node.machine,
         "branch": node.branch,
         "color": getattr(node, "color", "#a78bfa"),
         "vector_clock": node.vector_clock,
+        "inbox": node.inbox,
+        "session": SESSION_CODE,
+        "host": HOST_MACHINE,
+        "port": PORT,
+        "tunnel": TUNNEL.url,
+        "succession": mesh.succession(),
     }
 
 
@@ -1560,6 +2024,8 @@ async def scan_and_prompt_endpoint():
 
 @app.post("/api/prompt/{agent_id}")
 async def prompt_single_agent_endpoint(agent_id: str):
+    if not mesh.ui_state()["demo"]:
+        return {"status": "demo_only", "detail": "Start with --demo to use the scripted scenarios."}
     return await mesh.prompt_agent(agent_id)
 
 
@@ -1567,7 +2033,7 @@ async def prompt_single_agent_endpoint(agent_id: str):
 async def serve_windows_installer():
     ip = get_lan_ip()
     script = (
-        f"$HostUrl = 'http://{ip}:8000'\n"
+        f"$HostUrl = 'http://{ip}:{PORT}'\n"
         f"Write-Host '[GitPulse] Downloading LAN Auto-Watcher Daemon from ' $HostUrl -ForegroundColor Cyan\n"
         f"Invoke-WebRequest -Uri \"$HostUrl/agent_client.py\" -OutFile \"$env:TEMP\\gitpulse_agent.py\"\n"
         f"python \"$env:TEMP\\gitpulse_agent.py\" --server $HostUrl --watch\n"
@@ -1580,7 +2046,7 @@ async def serve_unix_installer():
     ip = get_lan_ip()
     script = (
         f"#!/bin/sh\n"
-        f"HOST_URL='http://{ip}:8000'\n"
+        f"HOST_URL='http://{ip}:{PORT}'\n"
         f"echo '[GitPulse] Connecting local agents & git branches to '$HOST_URL\n"
         f"curl -s \"$HOST_URL/agent_client.py\" -o /tmp/gitpulse_agent.py\n"
         f"python3 /tmp/gitpulse_agent.py --server \"$HOST_URL\" --watch\n"
@@ -1629,8 +2095,303 @@ async def get_agent_client_script():
     return PlainTextResponse("# Client script not found", status_code=404)
 
 
+FORWARD_HEADERS = ("cf-connecting-ip", "x-forwarded-for", "x-real-ip", "forwarded")
+# Endpoints a joining machine's script/hook calls. Each checks the session code itself.
+AGENT_PATHS = ("/api/agents/register", "/api/agents/file_change", "/api/agents/inbox/pull")
+PUBLIC_GET = ("/agent_client.py", "/agent_detect.py", "/gitpulse_hook.py", "/manifest.json", "/favicon.ico")
+
+
+def _is_local_request(request) -> bool:
+    """True only for requests made on this machine directly (not relayed through the tunnel)."""
+    host = request.client.host if request.client else ""
+    if any(h in request.headers for h in FORWARD_HEADERS):
+        return False
+    return host in ("127.0.0.1", "::1", "localhost", get_lan_ip())
+
+
+def _has_session(request) -> bool:
+    return request.cookies.get("gp_s") == SESSION_CODE or request.query_params.get("s") == SESSION_CODE
+
+
+def _client_ip(request: Request) -> str:
+    for h in ("cf-connecting-ip", "x-real-ip"):
+        if request.headers.get(h):
+            return request.headers[h]
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+@app.middleware("http")
+async def access_guard(request: Request, call_next):
+    """Host (this machine) can do everything. Others: join page + agent endpoints, and read-only
+    dashboard once they hold the session code (cookie set by the join page)."""
+    path = request.url.path
+    if _is_local_request(request):
+        return await call_next(request)
+    if path.startswith("/join/") or path in PUBLIC_GET or (request.method == "POST" and path in AGENT_PATHS):
+        return await call_next(request)
+    if request.method != "GET":
+        return JSONResponse({"status": "error", "detail": "only the host machine can do that"}, status_code=403)
+    if not _has_session(request):
+        return HTMLResponse("<h2 style='font-family:sans-serif'>GitPulse: open the invite link you were sent first.</h2>", status_code=403)
+    resp = await call_next(request)
+    if request.query_params.get("s") == SESSION_CODE:
+        resp.set_cookie("gp_s", SESSION_CODE, max_age=86400, samesite="lax")
+    return resp
+
+
+def _public_base(request: Request) -> str:
+    """Base URL as the visitor sees it (works through Tailscale / cloudflared too)."""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or f"{get_lan_ip()}:{PORT}"
+    return f"{proto}://{host}"
+
+
+def _join_ps1(base: str) -> str:
+    # Self-contained: uv fetches a private Python 3.12 + psutil into ~/.gitpulse. No admin, no PATH changes.
+    return (
+        f"$u = '{base}'\n"
+        "$d = Join-Path $HOME '.gitpulse'\n"
+        "New-Item -ItemType Directory -Force -Path $d | Out-Null\n"
+        "Write-Host \"[GitPulse] joining session at $u\" -ForegroundColor Cyan\n"
+        "foreach ($f in 'agent_client.py','agent_detect.py','gitpulse_hook.py') {\n"
+        "  Invoke-WebRequest -UseBasicParsing \"$u/$f\" -OutFile (Join-Path $d $f)\n"
+        "}\n"
+        "$env:UV_PYTHON_INSTALL_DIR = Join-Path $d 'python'\n"
+        "$env:UV_PYTHON_PREFERENCE = 'only-managed'\n"  # never touch system Pythons (may be broken or blocked by policy)
+        "$uv = Join-Path $d 'uv.exe'\n"
+        "if (-not (Test-Path $uv)) {\n"
+        "  Write-Host '[GitPulse] first run: setting up a private Python in ~/.gitpulse (about a minute, no admin)...'\n"
+        "  $env:UV_UNMANAGED_INSTALL = $d\n"
+        "  Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression *> $null\n"
+        "  Remove-Item Env:UV_UNMANAGED_INSTALL\n"
+        "  if (-not (Test-Path $uv)) { Write-Host '[GitPulse] could not download uv. Check your internet connection.' -ForegroundColor Red; return }\n"
+        "}\n"
+        "$v = Join-Path $d 'venv'\n"
+        "$py = Join-Path $v 'Scripts\\python.exe'\n"
+        "if (-not (Test-Path $py)) { & $uv venv -q --python 3.12 $v }\n"
+        "& $uv pip install -q --python $py psutil\n"
+        "if ($LASTEXITCODE -ne 0) { Write-Host '[GitPulse] could not install psutil.' -ForegroundColor Red; return }\n"
+        f"& $py (Join-Path $d 'agent_client.py') --server $u --session {SESSION_CODE} --watch\n"
+    )
+
+
+def _join_sh(base: str) -> str:
+    return (
+        "#!/bin/sh\n"
+        "set -e\n"
+        f"U='{base}'\n"
+        'D="$HOME/.gitpulse"; mkdir -p "$D"\n'
+        'echo "[GitPulse] joining session at $U"\n'
+        'for f in agent_client.py agent_detect.py gitpulse_hook.py; do curl -fsSL "$U/$f" -o "$D/$f"; done\n'
+        'export UV_PYTHON_INSTALL_DIR="$D/python" UV_PYTHON_PREFERENCE=only-managed\n'
+        'if [ ! -x "$D/uv" ]; then\n'
+        '  echo "[GitPulse] first run: setting up a private Python in ~/.gitpulse (about a minute, no admin)..."\n'
+        '  curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="$D" sh >/dev/null 2>&1\n'
+        'fi\n'
+        '[ -x "$D/venv/bin/python" ] || "$D/uv" venv -q --python 3.12 "$D/venv"\n'
+        '"$D/uv" pip install -q --python "$D/venv/bin/python" psutil\n'
+        f'exec "$D/venv/bin/python" "$D/agent_client.py" --server "$U" --session {SESSION_CODE} --watch </dev/tty\n'
+    )
+
+
+JOIN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join GitPulse</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--line:#e3e6ec;--fg:#14171f;--mute:#667085;--accent:#2563eb;--ok:#059669;--code:#f1f3f7}
+@media(prefers-color-scheme:dark){:root{--bg:#0b0d12;--card:#12151c;--line:#232836;--fg:#e8eaf0;--mute:#8a91a3;--accent:#60a5fa;--ok:#34d399;--code:#0a0c10}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 Inter,system-ui,sans-serif;display:flex;justify-content:center;padding:48px 16px}
+.card{max-width:560px;width:100%;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px}
+.chip{display:inline-block;font:12px 'JetBrains Mono',monospace;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--mute)}
+h1{font-size:22px;margin:10px 0 4px}p{color:var(--mute);margin:0 0 20px}
+.tabs{display:flex;gap:4px;margin-bottom:8px}.tabs button{background:none;border:1px solid transparent;color:var(--mute);border-radius:8px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer}
+.tabs button.on{border-color:var(--line);background:var(--code);color:var(--fg)}
+.row{display:flex;gap:8px}
+code{flex:1;min-width:0;font:13px/1.5 'JetBrains Mono',monospace;background:var(--code);border:1px solid var(--line);border-radius:10px;padding:11px 12px;overflow-x:auto;white-space:nowrap}
+.copy{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:0 16px;font:600 14px Inter,sans-serif;cursor:pointer}.copy.done{background:var(--ok)}
+ol{margin:22px 0 0;padding-left:20px;color:var(--mute);font-size:14px}li{margin:6px 0}b{color:var(--fg);font-weight:600}
+.foot{margin-top:22px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--mute);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+a{color:var(--accent);text-decoration:none}
+.dl{display:block;text-align:center;background:var(--accent);color:#fff;border-radius:10px;padding:13px;font-weight:600}.dl span{opacity:.75;font-weight:400;font-size:13px;margin-left:6px}
+.or{font-size:13px;color:var(--mute);margin:14px 0 6px}
+</style></head><body><div class="card">
+<span class="chip">session __CODE__</span>
+<h1>Join __HOST__&rsquo;s GitPulse</h1>
+<p>Paste one command in a terminal on your machine. Your machine shows up on the dashboard with the coding agents you have open.</p>
+<div class="tabs"><button data-os="ps1">Windows</button><button data-os="sh">macOS / Linux</button></div>
+<a class="dl" id="dl" href="/join/__CODE__/cmd" download>Download &amp; double-click <span>GitPulse-join.cmd</span></a>
+<div class="or" id="or">or paste this in PowerShell</div>
+<div class="row"><code id="cmd"></code><button class="copy" id="copy">Copy</button></div>
+<ol><li>If Windows asks whether to run the file, click <b>Run</b>. A window opens and stays open while you&rsquo;re in the session</li>
+<li>Sets everything up inside <b>~/.gitpulse</b>: its own Python, no admin, nothing else installed. First run takes about a minute</li>
+<li>Finds Claude Code, Antigravity, Codex, Aider&hellip; running on your machine</li>
+<li>Asks before adding a hook so your Claude Code / Antigravity sessions <b>receive</b> other agents&rsquo; changes</li>
+<li>If the host leaves, the first machine that joined takes over automatically, same session code</li>
+<li>Only changed <b>function signatures</b> leave your machine, never function bodies</li></ol>
+<div class="foot"><span>Ctrl+C in that terminal leaves the session.</span><a href="/">Watch the live dashboard &rarr;</a></div>
+</div>
+<script>
+const C={ps1:"curl.exe -fsSL __BASE__/join/__CODE__/ps1 -o $HOME/gp-join.ps1; powershell -ExecutionPolicy Bypass -File $HOME/gp-join.ps1",sh:"curl -fsSL __BASE__/join/__CODE__/sh | sh"};
+const cmd=document.getElementById('cmd'),tabs=document.querySelectorAll('.tabs button');
+function pick(os){cmd.textContent=C[os];tabs.forEach(t=>t.classList.toggle('on',t.dataset.os===os));
+const w=os==='ps1';document.getElementById('dl').style.display=w?'':'none';document.getElementById('or').textContent=w?'or paste this in PowerShell':'Paste this in Terminal'}
+tabs.forEach(t=>t.onclick=()=>pick(t.dataset.os));
+pick(/Win/.test(navigator.platform||navigator.userAgent)?'ps1':'sh');
+document.getElementById('copy').onclick=e=>{navigator.clipboard.writeText(cmd.textContent);const b=e.target;b.textContent='Copied';b.classList.add('done');setTimeout(()=>{b.textContent='Copy';b.classList.remove('done')},1500)};
+</script></body></html>"""
+
+
+@app.get("/api/session")
+async def session_info(request: Request):
+    base = _public_base(request)
+    return {"code": SESSION_CODE, "join_url": f"{base}/join/{SESSION_CODE}", "host": HOST_MACHINE, "workspace": mesh.workspace}
+
+
+@app.get("/join/{code}")
+async def join_page(code: str, request: Request):
+    if code != SESSION_CODE:
+        return HTMLResponse("<h2 style='font-family:sans-serif'>That GitPulse session code is not active on this host.</h2>", status_code=404)
+    html = (JOIN_PAGE.replace("__BASE__", _public_base(request)).replace("__CODE__", SESSION_CODE)
+            .replace("__HOST__", HOST_MACHINE))
+    resp = HTMLResponse(html)
+    resp.set_cookie("gp_s", SESSION_CODE, max_age=86400, samesite="lax")
+    return resp
+
+
+@app.get("/join/{code}/ps1")
+async def join_ps1(code: str, request: Request):
+    if code != SESSION_CODE:
+        return PlainTextResponse("Write-Host 'GitPulse: session code not active' -ForegroundColor Red", status_code=404)
+    return PlainTextResponse(_join_ps1(_public_base(request)))
+
+
+@app.get("/join/{code}/cmd")
+async def join_cmd(code: str, request: Request):
+    """Double-clickable Windows launcher. Saves the join script to a file and runs it with -File
+    (Defender blocks the `irm | iex` download-and-run pattern when cmd launches it)."""
+    if code != SESSION_CODE:
+        return PlainTextResponse("@echo GitPulse: session code not active& pause", status_code=404)
+    url = f"{_public_base(request)}/join/{SESSION_CODE}/ps1"
+    body = ("@echo off\r\ntitle GitPulse - joined session " + SESSION_CODE + "\r\n"
+            'if not exist "%USERPROFILE%\\.gitpulse" mkdir "%USERPROFILE%\\.gitpulse"\r\n'
+            f'curl.exe -fsSL "{url}" -o "%USERPROFILE%\\.gitpulse\\join.ps1" || (echo Could not reach the GitPulse host. & pause & exit /b 1)\r\n'
+            'powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\.gitpulse\\join.ps1"\r\n'
+            "echo.\r\necho GitPulse stopped. You can close this window.\r\npause >nul\r\n")
+    return PlainTextResponse(body, headers={"Content-Disposition": 'attachment; filename="GitPulse-join.cmd"'})
+
+
+@app.get("/join/{code}/sh")
+async def join_sh(code: str, request: Request):
+    if code != SESSION_CODE:
+        return PlainTextResponse("echo 'GitPulse: session code not active'; exit 1", status_code=404)
+    return PlainTextResponse(_join_sh(_public_base(request)))
+
+
+BUNDLE = ("mesh_engine.py", "index.html", "agent_detect.py", "gitpulse_hook.py", "agent_client.py")
+
+
+@app.get("/bundle/{name}")
+async def get_bundle_file(name: str, request: Request):
+    """Server files, so a joined watcher can take over hosting if this machine leaves.
+    Session-gated by access_guard (?s=CODE)."""
+    if name not in BUNDLE:
+        return PlainTextResponse("not found", status_code=404)
+    return PlainTextResponse((BASE_DIR / name).read_text(encoding="utf-8"))
+
+
+@app.get("/agent_detect.py")
+async def get_agent_detect_script():
+    return PlainTextResponse((BASE_DIR / "agent_detect.py").read_text(encoding="utf-8"), media_type="text/x-python")
+
+
+@app.get("/gitpulse_hook.py")
+async def get_hook_script():
+    return PlainTextResponse((BASE_DIR / "gitpulse_hook.py").read_text(encoding="utf-8"), media_type="text/x-python")
+
+
+@app.post("/api/agents/file_change")
+async def file_change_endpoint(req: FileChangeRequest, request: Request):
+    if req.session != SESSION_CODE and not _is_local_request(request):
+        return JSONResponse({"status": "error", "detail": "bad session code"}, status_code=403)
+    if req.agent_id not in mesh.nodes:
+        return JSONResponse({"status": "error", "detail": "register first"}, status_code=404)
+    mesh.nodes[req.agent_id].last_seen = time.time()
+    flow = mesh.record_file_change(req.agent_id, req.repo, req.path, req.old_code, req.new_code, "remote")
+    await mesh.broadcast_ui()
+    return {"status": "ok", "kind": flow["kind"], "bytes_sent": flow.get("bytes_sent", 0)}
+
+
+class InboxPullRequest(BaseModel):
+    claude_session_id: str = ""
+    engine: str = ""
+    conversation_id: str = ""
+    session: str = ""
+    machine: str = ""
+    cwd: str = ""
+    event: str = ""
+
+
+@app.post("/api/agents/inbox/pull")
+async def inbox_pull_endpoint(req: InboxPullRequest, request: Request):
+    """Called by gitpulse_hook.py inside a real Claude Code / Antigravity session."""
+    if req.session != SESSION_CODE and not _is_local_request(request):
+        return JSONResponse({"status": "error", "detail": "bad session code"}, status_code=403)
+    items = mesh.pull_inbox(req.claude_session_id, req.engine, req.machine, req.cwd)
+    if items is None:
+        return {"status": "unknown_session", "items": []}
+    if items:
+        await mesh.broadcast_ui()
+    return {"status": "ok", "items": items}
+
+
+class HookInstallRequest(BaseModel):
+    agent_id: str
+
+
+@app.post("/api/hooks/install")
+async def hook_install_endpoint(req: HookInstallRequest):
+    n = mesh.nodes.get(req.agent_id)
+    if not n or n.source != "local" or n.engine not in ("Claude Code", "Antigravity") or not n.meta.get("cwd"):
+        return JSONResponse({"status": "error", "detail": "only Claude Code / Antigravity agents on this machine"}, status_code=400)
+    try:
+        path = mesh.install_hook(req.agent_id)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+    await mesh.broadcast_ui()
+    return {"status": "ok", "path": path}
+
+
+@app.get("/api/tunnel")
+async def tunnel_info():
+    return TUNNEL.info()
+
+
+@app.post("/api/tunnel")
+async def tunnel_start():
+    if TUNNEL.status not in ("on", "starting", "downloading"):
+        threading.Thread(target=TUNNEL.start, daemon=True).start()
+        await asyncio.sleep(0.2)
+    return TUNNEL.info()
+
+
+@app.delete("/api/tunnel")
+async def tunnel_stop():
+    TUNNEL.stop()
+    await mesh.broadcast_ui()
+    return TUNNEL.info()
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    local = (websocket.client.host if websocket.client else "") in ("127.0.0.1", "::1", get_lan_ip()) and \
+        not any(h in websocket.headers for h in FORWARD_HEADERS)
+    if not local and websocket.cookies.get("gp_s") != SESSION_CODE and websocket.query_params.get("s") != SESSION_CODE:
+        await websocket.close(code=4403)
+        return
     await websocket.accept()
     mesh.ws_clients.add(websocket)
     await mesh.broadcast_ui()
@@ -1650,8 +2411,8 @@ class _LANBeaconProtocol(asyncio.DatagramProtocol):
             ip = get_lan_ip()
             reply = json.dumps({
                 "service": "gitpulse-host",
-                "url": f"http://{ip}:8000",
-                "ws_url": f"ws://{ip}:8000/ws",
+                "url": f"http://{ip}:{PORT}",
+                "ws_url": f"ws://{ip}:{PORT}/ws",
                 "term": mesh.term,
                 "leader": mesh.leader_id,
             }).encode("utf-8")
@@ -1668,9 +2429,20 @@ async def start_lan_discovery_beacon():
             allow_broadcast=True,
         )
         ip = get_lan_ip()
-        mesh.log_event("LAN-HOST", f"Host bound on http://{ip}:8000 (UDP Discovery Beacon :9999)")
+        mesh.log_event("LAN-HOST", f"Host bound on http://{ip}:{PORT} (UDP Discovery Beacon :9999)")
     except Exception:
         pass
+    if not DEMO_MODE:
+        asyncio.create_task(_live_loop())
+
+
+async def _live_loop():
+    while True:
+        try:
+            await mesh.live_tick()
+        except Exception as e:  # keep the loop alive, show the problem
+            mesh.log_event("ERROR", f"live scan failed: {e!r}")
+        await asyncio.sleep(3)
 
 
 @app.get("/")
@@ -1714,4 +2486,10 @@ if __name__ == "__main__":
         self_check()
     else:
         import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        print(f"\n  GitPulse dashboard : http://localhost:{PORT}")
+        print(f"  Join link (LAN)    : http://{get_lan_ip()}:{PORT}/join/{SESSION_CODE}")
+        print("  Other network?     : open the dashboard, click Invite > Internet link")
+        if TAKEOVER_FROM:
+            print(f"  Took over session {SESSION_CODE} from {TAKEOVER_FROM}")
+        print(f"  Mode               : {'demo (fake agents)' if DEMO_MODE else 'live (auto-detecting agents on this machine)'}\n")
+        uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
