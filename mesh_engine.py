@@ -1,5 +1,6 @@
 from pathlib import Path
 import ast, asyncio, atexit, difflib, hashlib, json, os, platform, re, secrets, shutil, socket, sqlite3, subprocess, sys, threading, time
+import urllib.error
 import urllib.request
 from typing import Dict, List, Optional, Set, Tuple
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -17,9 +18,35 @@ BASE_DIR = Path(__file__).parent
 WORKSPACE_REPO = BASE_DIR / "workspace_repo"
 DB_PATH = BASE_DIR / "mesh_state.db"
 PORT = int(os.environ.get("GITPULSE_PORT", "8000"))
-# Join code for this host's session. Anyone with the join link can add their agents.
-SESSION_CODE = os.environ.get("GITPULSE_SESSION") or secrets.token_hex(3)
 DEMO_MODE = "--demo" in sys.argv or os.environ.get("GITPULSE_DEMO") == "1"
+HOST_STATE_FILE = Path.home() / ".gitpulse" / "host_session.json"
+SESSION_REUSE_SECS = 12 * 3600
+
+
+def _load_host_state() -> dict:
+    """The previous run's session, so restarting the host doesn't lock out everyone who joined."""
+    if DEMO_MODE or os.environ.get("GITPULSE_NEW_SESSION") == "1":
+        return {}
+    try:
+        state = json.loads(HOST_STATE_FILE.read_text(encoding="utf-8"))
+        return state if time.time() - float(state.get("ts", 0)) < SESSION_REUSE_SECS else {}
+    except Exception:
+        return {}
+
+
+def _save_host_state(tunnel_wanted: bool) -> None:
+    if DEMO_MODE:
+        return
+    try:
+        HOST_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HOST_STATE_FILE.write_text(json.dumps({"code": SESSION_CODE, "tunnel": tunnel_wanted, "ts": time.time()}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+_PREVIOUS_RUN = _load_host_state()
+# Join code for this host's session. Anyone with the join link can add their agents.
+SESSION_CODE = os.environ.get("GITPULSE_SESSION") or _PREVIOUS_RUN.get("code") or secrets.token_hex(3)
 # Folder whose agents this session tracks ("auto" = the folder with the most running agents).
 WORKSPACE_ARG = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--workspace=")), os.environ.get("GITPULSE_WORKSPACE", "auto"))
 
@@ -93,6 +120,12 @@ class Tunnel:
         self.status = "off"  # off | downloading | starting | on | error
         self.error = ""
         self.proc: Optional[subprocess.Popen] = None
+        self.wanted = False    # the host asked for a link, so keep one up until it says stop
+        self.closing = False
+        self.born = 0.0
+        self.bad_probes = 0
+        self.backoff = 5.0
+        self.next_try = 0.0
 
     @staticmethod
     def _exe_name() -> str:
@@ -132,6 +165,7 @@ class Tunnel:
         """Blocking; run in a thread."""
         if self.status in ("downloading", "starting", "on"):
             return
+        self.wanted = True
         self.error = ""
         self.status = "starting"
         try:
@@ -147,13 +181,17 @@ class Tunnel:
                 if m:
                     self.url = m.group(0)
                     self.status = "on"
+                    self.born = time.time()
+                    self.bad_probes = 0
+                    self.backoff = 5.0
                     threading.Thread(target=self._drain, daemon=True).start()
+                    threading.Thread(target=self._announce, args=(self.url,), daemon=True).start()
                     return
                 if time.time() > deadline:
                     raise RuntimeError("cloudflared gave no link within 45 s")
             raise RuntimeError("cloudflared exited before giving a link")
         except Exception as e:
-            self.stop()
+            self._kill()
             self.status = "error"
             self.error = str(e)
 
@@ -167,18 +205,79 @@ class Tunnel:
         if self.proc is proc:
             self.url, self.status, self.proc = "", "off", None
 
-    def stop(self) -> None:
+    def _kill(self) -> None:
         proc, self.proc = self.proc, None
         self.url, self.status = "", "off"
         if proc and proc.poll() is None:
             proc.terminate()
+
+    def stop(self) -> None:
+        """The host turned the link off on purpose."""
+        self.wanted = False
+        self._kill()
+
+    def shutdown(self) -> None:
+        """Server exit. Leaves `wanted` saved so the next run brings the link back."""
+        self.closing = True
+        self._kill()
+
+    @staticmethod
+    def _announce(url: str) -> None:
+        """A quick tunnel gets a new URL each start: post it where joined watchers look for it."""
+        if os.environ.get("GITPULSE_NO_RENDEZVOUS") == "1":
+            return
+        topic = "gitpulse-" + hashlib.sha256(f"gitpulse-rendezvous:{SESSION_CODE}".encode()).hexdigest()[:24]
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"https://ntfy.sh/{topic}", data=url.encode("utf-8"), method="POST"), timeout=5).close()
+        except Exception:
+            pass
+
+    def _edge_ok(self) -> bool:
+        """False only when Cloudflare itself says the tunnel is gone. A local network blip isn't a dead tunnel."""
+        try:
+            urllib.request.urlopen(f"{self.url}/api/session?s={SESSION_CODE}", timeout=8).close()
+        except urllib.error.HTTPError as e:
+            return e.code < 500
+        except Exception:
+            pass
+        return True
+
+    def _tick(self) -> None:
+        now = time.time()
+        if not self.wanted or self.status in ("starting", "downloading"):
+            return
+        if self.status == "on":
+            # A new quick tunnel can take up to a minute to resolve.
+            if now - self.born < 60 or self._edge_ok():
+                self.bad_probes = 0
+                return
+            self.bad_probes += 1
+            if self.bad_probes < 3:
+                return
+            self._kill()  # cloudflared can stay running after the edge has dropped it
+        if now < self.next_try:
+            return
+        self.next_try = now + self.backoff
+        self.backoff = min(self.backoff * 2, 300.0)
+        self.start()
+
+    def supervise(self) -> None:
+        """Keeps the link up for as long as the host wants one. Run in a thread."""
+        while not self.closing:
+            time.sleep(10)
+            try:
+                self._tick()
+            except Exception as e:
+                self.error = str(e)
+            if not self.closing:
+                _save_host_state(self.wanted)
 
     def info(self) -> dict:
         return {"status": self.status, "url": self.url, "error": self.error}
 
 
 TUNNEL = Tunnel()
-atexit.register(TUNNEL.stop)
+atexit.register(TUNNEL.shutdown)
 
 
 # =====================================================================
@@ -2422,6 +2521,9 @@ class _LANBeaconProtocol(asyncio.DatagramProtocol):
 @app.on_event("startup")
 async def start_lan_discovery_beacon():
     loop = asyncio.get_running_loop()
+    TUNNEL.wanted = bool(_PREVIOUS_RUN.get("tunnel")) and not TAKEOVER_FROM
+    _save_host_state(TUNNEL.wanted)
+    threading.Thread(target=TUNNEL.supervise, daemon=True).start()
     try:
         await loop.create_datagram_endpoint(
             lambda: _LANBeaconProtocol(),

@@ -47,4 +47,7 @@ Note: anyone with the link can see agent session titles and last prompts.
 |---|---|
 | `--demo` / `GITPULSE_DEMO=1` | scripted 3-agent demo instead of live detection |
 | `GITPULSE_PORT` | server port (default 8000) |
-| `GITPULSE_SESSION` | fixed session code (default random) |
+| `GITPULSE_SESSION` | fixed session code (default: random, reused for 12 h across host restarts) |
+| `GITPULSE_NEW_SESSION=1` | ignore the saved session and make a new code |
+| `GITPULSE_NO_RENDEZVOUS=1` | host doesn't post new tunnel links to ntfy.sh, so internet peers can't follow them automatically |
+| `agent_client.py --no-takeover` | follow the host's new link, but never host the session from this machine |
