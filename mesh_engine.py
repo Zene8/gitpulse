@@ -1,9 +1,9 @@
 from pathlib import Path
-import ast, asyncio, difflib, hashlib, json, sqlite3, subprocess, sys, time
+import ast, asyncio, difflib, hashlib, json, socket, sqlite3, subprocess, sys, time
 from typing import Dict, List, Optional, Set, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="GitPulse // Distributed AST-CRDT Mesh, 3-Way Merger & Leaderless Failover")
@@ -14,9 +14,45 @@ WORKSPACE_REPO = BASE_DIR / "workspace_repo"
 DB_PATH = BASE_DIR / "mesh_state.db"
 
 
+def get_lan_ip() -> str:
+    """Discovers host LAN IP address for easy multi-agent Wi-Fi connection."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
 # =====================================================================
 # 1. DATA MODELS & CAUSAL VECTOR CLOCK ORDERING
 # =====================================================================
+
+class RegisterAgentRequest(BaseModel):
+    agent_id: str
+    role: str = "Autonomous Worker"
+    target_module: str = "services/worker.py"
+    initial_code: Optional[str] = None
+    deps: List[str] = []
+
+
+class GossipIdeaRequest(BaseModel):
+    agent_id: str
+    intent: str
+    gossip_message: Optional[str] = None
+    code: Optional[str] = None
+    target_agent: Optional[str] = None
 
 class ASTSymbol(BaseModel):
     name: str
@@ -344,13 +380,15 @@ class ASTEngine:
 # =====================================================================
 
 class AgentNode:
-    def __init__(self, agent_id: str, role: str, target_module: str, initial_code: str, deps: List[str]):
+    def __init__(self, agent_id: str, role: str, target_module: str, initial_code: str, deps: List[str], color: Optional[str] = None):
         self.agent_id = agent_id
         self.role = role
         self.target_module = target_module
         self.code = initial_code
         self.last_synced_code = initial_code
         self.deps = deps
+        self.color = color or "#a78bfa"
+        self.last_gossip = ""
         self.vector_clock: Dict[str, int] = {agent_id: 0}
         self.online: bool = True
         self.is_leader: bool = False
@@ -436,6 +474,7 @@ class MeshCluster:
                 "services/auth.py",
                 "def verify_token(token: str) -> bool:\n    return token.startswith('jwt_')\n",
                 deps=[],
+                color="#a78bfa",
             ),
             "agent-billing": AgentNode(
                 "agent-billing",
@@ -443,6 +482,7 @@ class MeshCluster:
                 "services/billing.py",
                 "def charge_user(user_id: str, amount: float, token: str = 'jwt_ok') -> dict:\n    valid = verify_token(token)\n    return {'status': 'paid' if valid else 'denied', 'amt': amount}\n",
                 deps=["agent-auth"],
+                color="#38bdf8",
             ),
             "agent-gateway": AgentNode(
                 "agent-gateway",
@@ -450,6 +490,7 @@ class MeshCluster:
                 "services/gateway.py",
                 "def route_request(path: str, token: str) -> int:\n    ok = verify_token(token)\n    return 200 if ok else 401\n",
                 deps=["agent-auth", "agent-billing"],
+                color="#34d399",
             ),
         }
         self.nodes["agent-auth"].is_leader = True
@@ -463,6 +504,7 @@ class MeshCluster:
         self.dag: List[DAGCommit] = []
         self.speculative_runs: List[dict] = []
         self.last_gossip_beam: Optional[dict] = None
+        self.active_bubbles: List[dict] = []
         self.metrics = {
             "micro_mutations_absorbed": 0,
             "private_edits_suppressed": 0,
@@ -478,6 +520,132 @@ class MeshCluster:
         self._init_sqlite_wal()
         self._init_workspace_git()
         self._record_dag("system", "EPOCH-FLUSH", "Genesis AST mesh snapshot")
+
+    def _emit_bubble(
+        self,
+        source: str,
+        targets: List[str],
+        kind: str,
+        label: str,
+        detail: str,
+        color: str = "#a78bfa",
+    ) -> dict:
+        bubble = {
+            "id": hashlib.sha256(f"{source}:{time.time_ns()}".encode()).hexdigest()[:8],
+            "source": source,
+            "targets": targets,
+            "kind": kind,
+            "label": label,
+            "detail": detail,
+            "color": color,
+            "timestamp": time.time(),
+        }
+        self.active_bubbles.append(bubble)
+        if len(self.active_bubbles) > 50:
+            self.active_bubbles = self.active_bubbles[-50:]
+        return bubble
+
+    def register_agent(
+        self,
+        agent_id: str,
+        role: str = "Autonomous Worker",
+        target_module: str = "services/worker.py",
+        initial_code: Optional[str] = None,
+        deps: Optional[List[str]] = None,
+    ) -> AgentNode:
+        if agent_id in self.nodes:
+            node = self.nodes[agent_id]
+            node.online = True
+            node.role = role or node.role
+            node.target_module = target_module or node.target_module
+            if initial_code:
+                node.code = initial_code
+                node.local_symbols = ASTEngine.extract_symbols(node.code, agent_id)
+                node.merkle_root = ASTEngine.compute_merkle_root(node.local_symbols)
+            self.log_event("JOIN", f"[{agent_id}] Reconnected on LAN mesh ({node.role}).")
+        else:
+            palette = ["#a78bfa", "#38bdf8", "#34d399", "#fbbf24", "#f472b6", "#fb7185", "#2dd4bf", "#818cf8", "#f97316"]
+            color = palette[len(self.nodes) % len(palette)]
+            code = initial_code or (
+                f"# {role} ({agent_id})\n"
+                f"def handle_{agent_id.replace('-', '_')}(data: dict) -> dict:\n"
+                f"    return {{'status': 'processed', 'agent': '{agent_id}'}}\n"
+            )
+            node = AgentNode(agent_id, role, target_module, code, deps or [], color=color)
+            self.nodes[agent_id] = node
+            for other_id, other_node in self.nodes.items():
+                if other_id != agent_id:
+                    other_node.known_peer_symbols.update(node.local_symbols)
+                    node.known_peer_symbols.update(other_node.local_symbols)
+            self._write_workspace_files()
+            self.log_event("JOIN", f"[{agent_id}] Connected as new agent on LAN mesh ({role}).")
+            self._record_dag(agent_id, "AGENT-JOIN", f"Agent '{agent_id}' joined ({role})")
+
+        self._emit_bubble(
+            source=agent_id,
+            targets=[nid for nid in self.nodes if nid != agent_id and self.nodes[nid].online] or ["mesh"],
+            kind="agent-join",
+            label=f"{agent_id} Joined",
+            detail=f"{role} in {target_module}",
+            color=getattr(node, "color", "#a78bfa"),
+        )
+        return node
+
+    def unregister_agent(self, agent_id: str) -> bool:
+        if agent_id in self.nodes:
+            node = self.nodes[agent_id]
+            if node.is_leader:
+                self.elect_new_leader()
+            del self.nodes[agent_id]
+            self.log_event("LEAVE", f"[{agent_id}] Disconnected from LAN mesh.")
+            self._record_dag("system", "AGENT-LEAVE", f"Agent '{agent_id}' left the mesh")
+            return True
+        return False
+
+    async def broadcast_idea_or_gossip(
+        self,
+        agent_id: str,
+        intent: str,
+        gossip_message: Optional[str] = None,
+        code: Optional[str] = None,
+        target_agent: Optional[str] = None,
+    ) -> dict:
+        if agent_id not in self.nodes:
+            self.register_agent(agent_id, role="Autonomous Peer", target_module=f"services/{agent_id.replace('-', '_')}.py")
+
+        node = self.nodes[agent_id]
+        msg = gossip_message or intent
+
+        if code and code.strip() != node.code.strip():
+            await self.trigger_agent_step(agent_id, code, intent)
+            return {"status": "ok", "mode": "code_mutation"}
+
+        node.intent = intent
+        node.last_gossip = msg
+        node.vector_clock[agent_id] = node.vector_clock.get(agent_id, 0) + 1
+        node.local_micro_commits += 1
+
+        targets = [target_agent] if target_agent and target_agent in self.nodes else [nid for nid in self.nodes if nid != agent_id and self.nodes[nid].online]
+        for tid in targets:
+            if tid in self.nodes:
+                self.nodes[tid].vector_clock[agent_id] = max(self.nodes[tid].vector_clock.get(agent_id, 0), node.vector_clock[agent_id])
+
+        self.metrics["micro_mutations_absorbed"] += 1
+        self.metrics["gossip_packets_routed"] += 1
+        self.log_event("GOSSIP-IDEA", f"[{agent_id}] Gossiped idea: {msg}")
+
+        self._record_dag(agent_id, "GOSSIP-IDEA", intent, diff=f"~ {msg[:40]}")
+        self._emit_bubble(
+            source=agent_id,
+            targets=targets or ["mesh"],
+            kind="idea",
+            label=intent[:24],
+            detail=msg,
+            color=getattr(node, "color", "#fbbf24"),
+        )
+        self.last_gossip_beam = {"source": agent_id, "targets": targets, "kind": "gossip", "ts": time.time()}
+        await self.broadcast_ui()
+        return {"status": "ok", "mode": "gossip_idea"}
 
     def _init_sqlite_wal(self):
         """SQLite WAL crash-resilient state store so host restarts never lose DAG or Vector Clocks."""
@@ -611,7 +779,14 @@ class MeshCluster:
         return winner.agent_id
 
     async def broadcast_ui(self):
+        lan_ip = get_lan_ip()
         state = {
+            "lan": {
+                "ip": lan_ip,
+                "port": 8000,
+                "url": f"http://{lan_ip}:8000",
+                "ws_url": f"ws://{lan_ip}:8000/ws",
+            },
             "cluster": {
                 "term": self.term,
                 "leader_id": self.leader_id,
@@ -623,6 +798,8 @@ class MeshCluster:
                     "role": n.role,
                     "target_module": n.target_module,
                     "deps": n.deps,
+                    "color": getattr(n, "color", "#a78bfa"),
+                    "last_gossip": getattr(n, "last_gossip", ""),
                     "online": n.online,
                     "is_leader": n.is_leader,
                     "term": n.term,
@@ -637,10 +814,11 @@ class MeshCluster:
                 for k, n in self.nodes.items()
             },
             "metrics": self.metrics,
-            "events": self.events[-25:],
+            "events": self.events[-30:],
             "dag": [c.model_dump() for c in self.dag[-16:]],
             "speculative_runs": self.speculative_runs,
             "beam": self.last_gossip_beam,
+            "bubbles": self.active_bubbles[-30:],
         }
         dead = set()
         for ws in self.ws_clients:
@@ -667,6 +845,14 @@ class MeshCluster:
                 f"[{agent_id}] Private AST body edit in {node.target_module}. Merkle leaf body updated, sig unchanged -> 0B sent.",
             )
             self._record_dag(agent_id, "PRIVATE-AST", intent, diff=short_diff)
+            self._emit_bubble(
+                source=agent_id,
+                targets=[agent_id],
+                kind="local",
+                label="Private AST (0B)",
+                detail=f"{node.target_module}: {intent}",
+                color="#10b981",
+            )
         else:
             if not node.online:
                 node.outbox_queue.append(packet)
@@ -676,10 +862,26 @@ class MeshCluster:
                     f"[{agent_id}] Offline! Queued AST delta in local CRDT outbox ({len(node.outbox_queue)} pending).",
                 )
                 self._record_dag(agent_id, "OFFLINE-BUFFER", f"[Offline] {intent}", diff=short_diff)
+                self._emit_bubble(
+                    source=agent_id,
+                    targets=[agent_id],
+                    kind="buffered",
+                    label=f"Queued #{len(node.outbox_queue)}",
+                    detail=f"CRDT outbox: {intent}",
+                    color="#f43f5e",
+                )
             else:
                 await self.route_gossip(packet)
                 node.last_synced_code = node.code
                 self._record_dag(agent_id, "CONTRACT-GOSSIP", intent, diff=short_diff)
+                self._emit_bubble(
+                    source=agent_id,
+                    targets=[p for p in self.nodes if p != agent_id and self.nodes[p].online],
+                    kind="contract",
+                    label="Contract Sig Change",
+                    detail=intent,
+                    color="#38bdf8",
+                )
 
         await self.broadcast_ui()
 
@@ -775,6 +977,14 @@ class MeshCluster:
         )
         await self.route_gossip(pkt)
         self._record_dag("agent-auth", "AST-3WAY-MERGE", f"Resolved Concurrent Split-Brain ({merge_notes})", diff=short_diff)
+        self._emit_bubble(
+            source="agent-auth",
+            targets=[p for p in self.nodes if p != "agent-auth" and self.nodes[p].online],
+            kind="merge",
+            label="3-Way AST Merge",
+            detail=merge_notes,
+            color="#e879f9",
+        )
         self.log_event(
             "AST-3WAY-MERGE",
             f"Resolved CONCURRENT split-brain on auth.py ({merge_notes}) & rewrote downstream AST call sites.",
@@ -901,6 +1111,14 @@ class MeshCluster:
                 f"3x Winner ({winner['branch']} @ {winner['latency_us']}us)",
             )
             self.dag[-1].kind = "SPECULATIVE-WIN"
+            self._emit_bubble(
+                source="agent-gateway",
+                targets=[nid for nid in self.nodes if nid != "agent-gateway" and self.nodes[nid].online] or ["mesh"],
+                kind="speculative",
+                label=f"3x Winner ({winner['branch']})",
+                detail=f"{winner['strategy']} ({winner['latency_us']}µs) - pruned 2 branches",
+                color="#c084fc",
+            )
             await self.broadcast_ui()
 
     async def rollback_to_commit(self, commit_id: str) -> bool:
@@ -955,6 +1173,14 @@ class MeshCluster:
             f"Coordinator {self.leader_id} (Term {self.term}) merged {total_commits} edits -> {sha}",
             diff=f"+ git commit {sha} ({total_commits} squashed)",
             git_sha=sha,
+        )
+        self._emit_bubble(
+            source=self.leader_id,
+            targets=["github"],
+            kind="flush",
+            label=f"PR #{sha} Landed",
+            detail=f"Squashed {total_commits} AST mutations to GitHub main",
+            color="#f97316",
         )
         await self.broadcast_ui()
         return {"status": "ok", "sha": sha, "leader": self.leader_id, "term": self.term}
@@ -1033,6 +1259,119 @@ async def flush_to_github():
     return await mesh.atomic_github_flush()
 
 
+@app.get("/api/lan")
+async def get_lan_endpoint():
+    ip = get_lan_ip()
+    return {
+        "ip": ip,
+        "port": 8000,
+        "url": f"http://{ip}:8000",
+        "ws_url": f"ws://{ip}:8000/ws",
+        "hostname": socket.gethostname(),
+    }
+
+
+@app.get("/api/state")
+async def get_state_endpoint():
+    ip = get_lan_ip()
+    return {
+        "lan": {
+            "ip": ip,
+            "port": 8000,
+            "url": f"http://{ip}:8000",
+            "ws_url": f"ws://{ip}:8000/ws",
+        },
+        "cluster": {"term": mesh.term, "leader_id": mesh.leader_id},
+        "nodes": {
+            k: {
+                "agent_id": n.agent_id,
+                "role": n.role,
+                "target_module": n.target_module,
+                "online": n.online,
+                "is_leader": n.is_leader,
+                "color": getattr(n, "color", "#a78bfa"),
+                "last_gossip": getattr(n, "last_gossip", ""),
+                "vector_clock": n.vector_clock,
+                "local_micro_commits": n.local_micro_commits,
+                "outbox_size": len(n.outbox_queue),
+                "symbols": [s.name for s in n.local_symbols.values()],
+            }
+            for k, n in mesh.nodes.items()
+        },
+        "metrics": mesh.metrics,
+        "bubbles": mesh.active_bubbles[-25:],
+    }
+
+
+@app.get("/api/agents")
+async def list_agents():
+    return {
+        "agents": [
+            {
+                "agent_id": n.agent_id,
+                "role": n.role,
+                "target_module": n.target_module,
+                "online": n.online,
+                "is_leader": n.is_leader,
+                "vector_clock": n.vector_clock,
+                "color": getattr(n, "color", "#a78bfa"),
+                "last_gossip": getattr(n, "last_gossip", ""),
+                "outbox_size": len(n.outbox_queue),
+            }
+            for n in mesh.nodes.values()
+        ]
+    }
+
+
+@app.post("/api/agents/register")
+async def register_agent_endpoint(req: RegisterAgentRequest):
+    node = mesh.register_agent(
+        agent_id=req.agent_id,
+        role=req.role,
+        target_module=req.target_module,
+        initial_code=req.initial_code,
+        deps=req.deps,
+    )
+    await mesh.broadcast_ui()
+    return {
+        "status": "ok",
+        "agent_id": node.agent_id,
+        "role": node.role,
+        "target_module": node.target_module,
+        "color": getattr(node, "color", "#a78bfa"),
+        "vector_clock": node.vector_clock,
+    }
+
+
+@app.delete("/api/agents/{agent_id}")
+async def unregister_agent_endpoint(agent_id: str):
+    ok = mesh.unregister_agent(agent_id)
+    if ok:
+        await mesh.broadcast_ui()
+        return {"status": "ok"}
+    return {"status": "error", "detail": "Agent not found"}
+
+
+@app.post("/api/agents/gossip")
+async def gossip_endpoint(req: GossipIdeaRequest):
+    res = await mesh.broadcast_idea_or_gossip(
+        agent_id=req.agent_id,
+        intent=req.intent,
+        gossip_message=req.gossip_message,
+        code=req.code,
+        target_agent=req.target_agent,
+    )
+    return res
+
+
+@app.get("/agent_client.py")
+async def get_agent_client_script():
+    client_path = BASE_DIR / "agent_client.py"
+    if client_path.exists():
+        return PlainTextResponse(client_path.read_text(encoding="utf-8"), media_type="text/x-python")
+    return PlainTextResponse("# Client script not found", status_code=404)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -1043,6 +1382,38 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         mesh.ws_clients.discard(websocket)
+
+
+class _LANBeaconProtocol(asyncio.DatagramProtocol):
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data: bytes, addr):
+        if data.strip() == b"GITPULSE_DISCOVER":
+            ip = get_lan_ip()
+            reply = json.dumps({
+                "service": "gitpulse-host",
+                "url": f"http://{ip}:8000",
+                "ws_url": f"ws://{ip}:8000/ws",
+                "term": mesh.term,
+                "leader": mesh.leader_id,
+            }).encode("utf-8")
+            self.transport.sendto(reply, addr)
+
+
+@app.on_event("startup")
+async def start_lan_discovery_beacon():
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.create_datagram_endpoint(
+            lambda: _LANBeaconProtocol(),
+            local_addr=("0.0.0.0", 9999),
+            allow_broadcast=True,
+        )
+        ip = get_lan_ip()
+        mesh.log_event("LAN-HOST", f"Host bound on http://{ip}:8000 (UDP Discovery Beacon :9999)")
+    except Exception:
+        pass
 
 
 @app.get("/")

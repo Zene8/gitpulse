@@ -50,27 +50,30 @@
 <body class="grid-bg flex flex-col justify-between p-5">
 
   <!-- ================= TOP: GITHUB MAIN FORGE ================= -->
-  <header class="z-20 flex items-center justify-between border border-neutral-800 bg-black/90 px-4 py-2.5">
+  <header class="z-30 flex items-center justify-between border border-neutral-800 bg-black/95 px-4 py-2.5">
     <div class="flex items-center gap-4">
       <div class="flex items-center gap-2">
         <span class="w-2 h-2 bg-white inline-block"></span>
         <span class="text-xs font-bold tracking-[0.2em] uppercase">GITHUB // MAIN</span>
       </div>
       <div class="h-3 w-[1px] bg-neutral-800"></div>
-      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[36vw]">
+      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[30vw]">
         <span class="text-[10px] text-neutral-600 tracking-widest">WAITING FOR UNIFIED PR</span>
       </div>
     </div>
 
     <!-- Minimal Sharp Controls -->
     <div class="flex items-center gap-2">
-      <div class="hidden xl:flex items-center gap-3.5 mr-3 text-[10px] text-neutral-500 tracking-wider">
+      <div class="hidden xl:flex items-center gap-3.5 mr-2 text-[10px] text-neutral-500 tracking-wider">
         <span>TERM <strong id="k-term" class="text-white">1</strong></span>
         <span>HOST <strong id="k-leader" class="text-amber-400">AUTH</strong></span>
         <span>MERGES <strong id="k-merges" class="text-fuchsia-400">0</strong></span>
         <span>ADAPTED <strong id="k-adapt" class="text-sky-400">0</strong></span>
         <span>PRs <strong id="k-prs" class="text-orange-500">0</strong></span>
       </div>
+      <button onclick="toggleLanDrawer()" id="lan-btn" class="border border-emerald-500/70 bg-emerald-950/20 hover:bg-emerald-950/50 text-emerald-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
+        LAN // <span id="lan-ip-badge">127.0.0.1:8000</span>
+      </button>
       <button onclick="stepSim()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-white px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
         + IDEA
       </button>
@@ -88,6 +91,35 @@
       </button>
     </div>
   </header>
+
+  <!-- ================= LAN HOST SETUP & AGENT CONNECT BAR ================= -->
+  <section id="lan-drawer" class="hidden z-30 border-x border-b border-neutral-800 bg-black/95 px-4 py-3">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
+      <!-- LAN Host CLI Join Command -->
+      <div class="lg:col-span-6 flex items-center justify-between border border-neutral-800 bg-neutral-950 px-3 py-2">
+        <div class="truncate mr-3">
+          <div class="text-[9px] text-neutral-500 tracking-widest uppercase mb-0.5">LAN ZERO-CONFIG JOIN (UDP :9999 AUTO-DISCOVERY OR HTTP)</div>
+          <code id="lan-cmd" class="text-[10px] text-emerald-400 select-all">python agent_client.py --id agent-node</code>
+        </div>
+        <button onclick="copyLanCmd()" id="copy-btn" class="shrink-0 border border-neutral-700 hover:border-white px-2.5 py-1 text-[9px] tracking-widest uppercase">
+          COPY CMD
+        </button>
+      </div>
+
+      <!-- Direct LAN Agent Registration -->
+      <div class="lg:col-span-6 flex items-center gap-2">
+        <input id="new-agent-id" type="text" placeholder="agent-payments" value="agent-payments"
+          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2.5 py-2 text-[10px] text-white outline-none w-36" />
+        <input id="new-agent-mod" type="text" placeholder="services/pay.py" value="services/pay.py"
+          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2.5 py-2 text-[10px] text-white outline-none w-40" />
+        <input id="new-agent-idea" type="text" placeholder="def verify_tx(id: str) -> bool: return True"
+          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2.5 py-2 text-[10px] text-white outline-none flex-1" />
+        <button onclick="connectLanAgent()" class="shrink-0 border border-emerald-500 bg-emerald-500 text-black font-bold px-3 py-2 text-[10px] tracking-widest uppercase hover:bg-emerald-400 transition">
+          + CONNECT AGENT
+        </button>
+      </div>
+    </div>
+  </section>
 
 
   <!-- ================= MIDDLE: THE INTERMITTENT MESH CLOUD ================= -->
@@ -158,7 +190,7 @@
 
 
   <!-- ================= BOTTOM: AGENTS ROW ================= -->
-  <footer id="agents-row" class="z-20 grid grid-cols-3 gap-4"></footer>
+  <footer id="agents-row" class="z-20 grid gap-3"></footer>
 
 
   <script>
@@ -167,6 +199,7 @@
     let flushingAnim = false;
     let unmergedItems = [];
     let mergedPRs = [];
+    let hostUrl = location.origin;
 
     const CLOUD_SLOTS = [
       { left: '16%', top: '34%' },
@@ -179,20 +212,26 @@
       { left: '38%', top: '33%' },
     ];
 
-    const AGENT_X = {
-      'agent-auth': 200,
-      'agent-billing': 600,
-      'agent-gateway': 1000
-    };
-
     ws.onmessage = (event) => {
       const state = JSON.parse(event.data);
+      if (state.lan) {
+        hostUrl = state.lan.url;
+        document.getElementById('lan-ip-badge').innerText = `${state.lan.ip}:${state.lan.port}`;
+        document.getElementById('lan-cmd').innerText = `python agent_client.py --server ${state.lan.url} --id agent-peer`;
+      }
       updateKPIs(state.metrics, state.cluster);
       processDAG(state.dag);
       renderBeams(state.nodes, state.beam);
       renderCloudField();
       renderAgents(state.nodes);
     };
+
+    function getAgentX(idx, total) {
+      const span = 960;
+      const start = 120;
+      if (total <= 1) return 600;
+      return Math.round(start + (idx * (span / (total - 1))));
+    }
 
     function updateKPIs(m, cluster) {
       if (cluster) {
@@ -243,8 +282,9 @@
           class="${flushing ? 'uplink-active' : ''}" />`;
       });
 
-      Object.values(nodes).forEach(n => {
-        const x = AGENT_X[n.agent_id] || 600;
+      const nodeList = Object.values(nodes);
+      nodeList.forEach((n, idx) => {
+        const x = getAgentX(idx, nodeList.length);
         const active = beam && beam.source === n.agent_id;
         if (!n.online) {
           svg += `
@@ -331,6 +371,10 @@
           border = 'border-red-500';
           tagColor = 'text-red-400';
           tag = 'QUEUED';
+        } else if (item.kind === 'AGENT-JOIN' || item.kind === 'GOSSIP-IDEA') {
+          border = 'border-emerald-400';
+          tagColor = 'text-emerald-300';
+          tag = 'LAN PEER';
         }
 
         const diffLines = (item.diff || '+ ast_mutation()').split('\n').slice(0, 2).map(line => {
@@ -358,7 +402,10 @@
 
     function renderAgents(nodes) {
       const container = document.getElementById('agents-row');
-      container.innerHTML = Object.values(nodes).map(n => {
+      const list = Object.values(nodes);
+      container.style.gridTemplateColumns = `repeat(${Math.max(1, list.length)}, minmax(0, 1fr))`;
+
+      container.innerHTML = list.map(n => {
         const shortName = n.agent_id.replace('agent-', '').toUpperCase();
         const sig = n.symbols && n.symbols[0] ? n.symbols[0].signature : n.target_module;
         const onlineBorder = n.online
@@ -368,16 +415,20 @@
         const vcStr = Object.entries(n.vector_clock).map(([k, v]) => `${k.replace('agent-', '')[0]}:${v}`).join(' ');
 
         return `
-          <div class="border ${onlineBorder} bg-black/95 p-3.5 flex flex-col justify-between transition">
+          <div class="border ${onlineBorder} bg-black/95 p-3 flex flex-col justify-between transition">
             <div class="flex items-center justify-between mb-2">
-              <div class="flex items-center gap-2">
-                <span class="w-1.5 h-1.5 ${n.online ? 'bg-emerald-400' : 'bg-red-500 animate-ping'}"></span>
-                <span class="text-xs font-bold tracking-[0.2em]">${shortName}</span>
-                ${n.is_leader ? `<span class="text-[9px] bg-amber-500 text-black font-bold px-1.5 py-0.2 tracking-widest">HOST T${n.term}</span>` : ''}
-                <span class="text-[10px] text-neutral-600">${n.target_module}</span>
+              <div class="flex items-center gap-1.5 truncate">
+                <span class="w-1.5 h-1.5 shrink-0 ${n.online ? 'bg-emerald-400' : 'bg-red-500 animate-ping'}"></span>
+                <span class="text-xs font-bold tracking-[0.15em] truncate">${shortName}</span>
+                ${n.is_leader ? `<span class="text-[9px] bg-amber-500 text-black font-bold px-1 py-0.2 tracking-widest shrink-0">HOST T${n.term}</span>` : ''}
+                <span class="text-[10px] text-neutral-600 truncate">${n.target_module}</span>
               </div>
-              <div class="flex items-center gap-1.5">
-                ${n.outbox_size > 0 ? `<span class="text-[9px] bg-red-950 text-red-300 border border-red-700 px-1.5 py-0.5">OUTBOX ${n.outbox_size}</span>` : ''}
+              <div class="flex items-center gap-1 shrink-0">
+                ${n.outbox_size > 0 ? `<span class="text-[9px] bg-red-950 text-red-300 border border-red-700 px-1 py-0.5">Q:${n.outbox_size}</span>` : ''}
+                <button onclick="sendQuickIdea('${n.agent_id}')" title="Send Idea up to Cloud"
+                  class="border border-neutral-800 text-neutral-400 hover:border-white hover:text-white px-1.5 py-0.5 text-[9px] tracking-widest uppercase transition">
+                  ↑
+                </button>
                 <button onclick="togglePartition('${n.agent_id}')"
                   class="border ${n.online ? 'border-neutral-800 text-neutral-400 hover:border-red-500 hover:text-red-400' : 'border-red-500 text-red-300 bg-red-950/40'} px-2 py-0.5 text-[9px] tracking-widest uppercase transition">
                   ${n.online ? (n.is_leader ? 'KILL HOST' : 'LINKED') : 'REJOIN'}
@@ -385,7 +436,7 @@
               </div>
             </div>
 
-            <div class="bg-neutral-950 border border-neutral-900 px-2.5 py-1.5 mb-2 flex justify-between items-center text-[10px]">
+            <div class="bg-neutral-950 border border-neutral-900 px-2 py-1.5 mb-2 flex justify-between items-center text-[10px]">
               <span class="text-sky-300 truncate">${escapeHtml(sig)}</span>
               <span class="text-neutral-600 ml-2 shrink-0">M:${n.merkle_root.slice(0, 6)}</span>
             </div>
@@ -401,6 +452,49 @@
 
     function escapeHtml(str) {
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function toggleLanDrawer() {
+      const el = document.getElementById('lan-drawer');
+      el.classList.toggle('hidden');
+    }
+
+    function copyLanCmd() {
+      const cmd = document.getElementById('lan-cmd').innerText;
+      navigator.clipboard.writeText(cmd);
+      const btn = document.getElementById('copy-btn');
+      btn.innerText = 'COPIED';
+      setTimeout(() => { btn.innerText = 'COPY CMD'; }, 1200);
+    }
+
+    async function connectLanAgent() {
+      const id = document.getElementById('new-agent-id').value.trim() || `agent-${Math.floor(Math.random()*900+100)}`;
+      const mod = document.getElementById('new-agent-mod').value.trim() || `services/${id.replace('agent-','')}.py`;
+      const codeInput = document.getElementById('new-agent-idea').value.trim();
+      const code = codeInput || `def ${id.replace('-', '_')}_handler(payload: dict) -> bool:\n    return True\n`;
+
+      await fetch('/api/agents/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: id,
+          role: 'LAN Peer Agent',
+          target_module: mod,
+          initial_code: code
+        })
+      });
+    }
+
+    async function sendQuickIdea(agentId) {
+      await fetch('/api/agents/gossip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: agentId,
+          intent: `Speculative AST update from ${agentId}`,
+          gossip_message: `def sync_${Math.floor(Math.random()*99)}() -> bool: return True`
+        })
+      });
     }
 
     async function stepSim() { await fetch('/api/step', { method: 'POST' }); }
