@@ -405,16 +405,26 @@ function renderNet(nodes, st) {
         <text x="${bx + bw - 12}" y="${by + 19}" text-anchor="end" fill="${host ? con : dim}" font-size="9" font-weight="700" font-family="var(--mono)">${host ? 'HOST' : 'PEER'} · ${on} ACTIVE</text>
       </g>`;
 
-      // Horizontal list of Agent circle bubbles inside
-      const maxCols = 4;
+      // Horizontal list of Agent circle bubbles inside (smaller, compact fit)
+      const maxCols = Math.max(3, Math.min(count, 5));
       const slotW = count > 0 ? (bw - 24) / Math.min(count, maxCols) : bw - 24;
-      const r = 24; // agent circle bubble radius
+      const r = 17; // compact agent bubble radius
+
+      // Intra-machine mesh line connecting agents on the same PC
+      if (count > 1) {
+        for (let i = 0; i < count - 1; i++) {
+          const x1 = bx + 12 + slotW * i + slotW / 2;
+          const x2 = bx + 12 + slotW * (i + 1) + slotW / 2;
+          const cy = by + 68;
+          links += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="${line}" stroke-width="1" stroke-dasharray="2 3" opacity=".6" />`;
+        }
+      }
 
       g.nodes.forEach((x, i) => {
         const col = i % maxCols;
         const row = Math.floor(i / maxCols);
         const cx = bx + 12 + slotW * col + slotW / 2;
-        const cy = by + 28 + 36 + row * 62;
+        const cy = by + 68 + row * 60;
         pos[x.agent_id] = [cx, cy];
 
         const isSelected = selectedAgentId === x.agent_id;
@@ -428,26 +438,26 @@ function renderNet(nodes, st) {
           <title>${esc(x.label)} (${esc(x.engine)})\n↑ ${sent} contracts sent · ↓ ${recv} received\nClick to inspect sent/received activity</title>
           
           <!-- Outer highlight ring if selected -->
-          ${isSelected ? `<circle cx="${cx}" cy="${cy}" r="${r + 5}" fill="none" stroke="${fg}" stroke-width="1.5" stroke-dasharray="3 3" />` : ''}
+          ${isSelected ? `<circle cx="${cx}" cy="${cy}" r="${r + 4}" fill="none" stroke="${fg}" stroke-width="1.5" stroke-dasharray="3 3" />` : ''}
 
           <!-- Agent Circle Bubble -->
-          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="${r}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2.5 : 2}" />
+          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="${r}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2 : 1.5}" />
           
           <!-- Initials inside Bubble -->
-          <text x="${cx}" y="${cy + 4.5}" text-anchor="middle" fill="${fg}" font-size="12" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
+          <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="${fg}" font-size="9.5" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
           
           <!-- Status indicator dot on top-right of circle -->
-          <circle cx="${cx + r * 0.7}" cy="${cy - r * 0.7}" r="4.5" fill="${x.online ? (x.color || ok) : dim}" stroke="${panel}" stroke-width="1.5" />
+          <circle cx="${cx + r * 0.7}" cy="${cy - r * 0.7}" r="3.5" fill="${x.online ? (x.color || ok) : dim}" stroke="${panel}" stroke-width="1.5" />
           
           <!-- Agent Label below bubble -->
-          <text x="${cx}" y="${cy + r + 13}" text-anchor="middle" fill="${fg}" font-size="10.5" font-weight="600">${esc(x.label)}</text>
+          <text x="${cx}" y="${cy + r + 11}" text-anchor="middle" fill="${fg}" font-size="9.5" font-weight="600">${esc(x.label)}</text>
           
           <!-- Sent/Recv badge below label -->
-          <g transform="translate(${cx - 24}, ${cy + r + 18})">
-            <rect x="0" y="0" width="48" height="14" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="0.8" />
-            <text x="5" y="10" fill="${sent ? con : dim}" font-size="8" font-weight="700" font-family="var(--mono)">↑${sent}</text>
-            <text x="25" y="10" fill="${recv ? join : dim}" font-size="8" font-weight="700" font-family="var(--mono)">↓${recv}</text>
-            <circle cx="43" cy="7" r="2.5" fill="${rxColor}" />
+          <g transform="translate(${cx - 22}, ${cy + r + 16})">
+            <rect x="0" y="0" width="44" height="13" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="0.8" />
+            <text x="4" y="9.5" fill="${sent ? con : dim}" font-size="7.5" font-weight="700" font-family="var(--mono)">↑${sent}</text>
+            <text x="23" y="9.5" fill="${recv ? join : dim}" font-size="7.5" font-weight="700" font-family="var(--mono)">↓${recv}</text>
+            <circle cx="39" cy="6.5" r="2" fill="${rxColor}" />
           </g>
         </g>`;
       });
@@ -492,20 +502,29 @@ function renderNet(nodes, st) {
       const maxCols = 4;
       const count = g.nodes.length;
       const slotW = count > 0 ? (bw - 24) / Math.min(count, maxCols) : bw - 24;
-      const r = 22;
+      const r = 16;
+
+      if (count > 1) {
+        for (let i = 0; i < Math.min(count, 4) - 1; i++) {
+          const x1 = bx + 12 + slotW * i + slotW / 2;
+          const x2 = bx + 12 + slotW * (i + 1) + slotW / 2;
+          const cy = by + 65;
+          links += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="${line}" stroke-width="1" stroke-dasharray="2 3" opacity=".6" />`;
+        }
+      }
 
       g.nodes.slice(0, 4).forEach((x, i) => {
         const cx = bx + 12 + slotW * i + slotW / 2;
-        const cy = by + 26 + 32;
+        const cy = by + 65;
         pos[x.agent_id] = [cx, cy];
         const isSelected = selectedAgentId === x.agent_id;
         agents += `<g class="agent-node-group" onclick="openAgentModal('${esc(x.agent_id)}')">
           ${isSelected ? `<circle cx="${cx}" cy="${cy}" r="${r + 4}" fill="none" stroke="${fg}" stroke-width="1.5" stroke-dasharray="3 3" />` : ''}
-          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="${r}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2.5 : 2}" />
-          <circle cx="${cx + r * 0.7}" cy="${cy - r * 0.7}" r="4" fill="${x.online ? (x.color || ok) : dim}" stroke="${panel}" stroke-width="1.5" />
-          <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="${fg}" font-size="11" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
-          <text x="${cx}" y="${cy + r + 13}" text-anchor="middle" fill="${fg}" font-size="10" font-weight="600">${esc(x.label)}</text>
-          <text x="${cx}" y="${cy + r + 24}" text-anchor="middle" fill="${dim}" font-size="8.5" font-family="var(--mono)">${esc(x.engine)}</text>
+          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="${r}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2 : 1.5}" />
+          <circle cx="${cx + r * 0.7}" cy="${cy - r * 0.7}" r="3" fill="${x.online ? (x.color || ok) : dim}" stroke="${panel}" stroke-width="1.5" />
+          <text x="${cx}" y="${cy + 3.5}" text-anchor="middle" fill="${fg}" font-size="9" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
+          <text x="${cx}" y="${cy + r + 11}" text-anchor="middle" fill="${fg}" font-size="9.5" font-weight="600">${esc(x.label)}</text>
+          <text x="${cx}" y="${cy + r + 22}" text-anchor="middle" fill="${dim}" font-size="8" font-family="var(--mono)">${esc(x.engine)}</text>
         </g>`;
       });
     });
@@ -563,10 +582,26 @@ function animateFlow(f) {
   if (f.kind === 'private') {
     pulseTile(f.source, css('--private'));
   } else if (f.kind === 'contract') {
+    const targets = (f.targets && f.targets.length) ? f.targets : (S && Object.keys(S.nodes || {}).filter((k) => k !== f.source)) || [];
+    const srcNode = S && S.nodes && S.nodes[f.source];
+    
+    // Check if targets include agents on the same machine
+    const sameMachineTargets = targets.filter((tid) => {
+      const tNode = S && S.nodes && S.nodes[tid];
+      return srcNode && tNode && srcNode.machine && srcNode.machine === tNode.machine;
+    });
+    const crossMachineTargets = targets.filter((tid) => !sameMachineTargets.includes(tid));
+
+    // Direct peer-to-peer intra-machine packet animation on the same PC
+    sameMachineTargets.forEach((tid, i) => {
+      packet(f.source, tid, css('--contract'), i * 60);
+      setTimeout(() => pulseTile(tid, css('--contract')), 800 + i * 60);
+    });
+
+    // Also route via central relay for cross-machine or mesh consistency
     packet(f.source, 'hub', css('--contract'));
     setTimeout(() => {
-      const targets = (f.targets && f.targets.length) ? f.targets : (S && Object.keys(S.nodes || {}).filter((k) => k !== f.source)) || [];
-      targets.forEach((tid, i) => {
+      crossMachineTargets.forEach((tid, i) => {
         packet('hub', tid, css('--contract'), i * 80);
         setTimeout(() => pulseTile(tid, css('--contract')), 800 + i * 80);
       });
@@ -574,6 +609,9 @@ function animateFlow(f) {
   } else if (f.kind === 'deliver') {
     packet('hub', f.source, css('--join'));
     setTimeout(() => pulseTile(f.source, css('--join')), 800);
+  } else if (f.kind === 'collision') {
+    pulseTile(f.source, css('--bad'));
+    (f.targets || []).forEach((tid) => pulseTile(tid, css('--bad')));
   }
 }
 
