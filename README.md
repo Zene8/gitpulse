@@ -17,3 +17,34 @@ pip install -r requirements.txt
 python mesh_engine.py --check   # Run built-in verification suite
 python mesh_engine.py           # Launch live server + dashboard on http://localhost:8000
 ```
+
+## Live mode (default)
+
+`python mesh_engine.py` auto-detects coding agents running on this machine (Claude Code, Antigravity, Codex, Aider...)
+by process working directory, finds the git repos + GitHub remotes they work in, and watches their `.py` edits:
+
+- body-only edit: stays private, 0 bytes sent
+- signature / class / constant added, changed or removed: that "contract" is pushed to every other agent's inbox
+
+Dashboard shows agents, repos, the network and a feed of exactly what got passed.
+
+## Inviting people
+
+Click **Invite people** in the dashboard. It gives a join link (`http://<lan-ip>:8000/join/<code>`) with
+one-line installers:
+
+```powershell
+irm http://<host>:8000/join/<code>/ps1 | iex      # Windows
+```
+```bash
+curl -fsSL http://<host>:8000/join/<code>/sh | sh  # macOS / Linux
+```
+
+Off the same network: use Tailscale, or `cloudflared tunnel --url http://localhost:8000` and share that URL + `/join/<code>`.
+Note: anyone with the link can see agent session titles and last prompts.
+
+| Env / flag | Effect |
+|---|---|
+| `--demo` / `GITPULSE_DEMO=1` | scripted 3-agent demo instead of live detection |
+| `GITPULSE_PORT` | server port (default 8000) |
+| `GITPULSE_SESSION` | fixed session code (default random) |
