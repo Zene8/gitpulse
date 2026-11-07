@@ -312,6 +312,7 @@ class GossipIdeaRequest(BaseModel):
     gossip_message: Optional[str] = None
     code: Optional[str] = None
     target_agent: Optional[str] = None
+    session: str = ""
 
 class ASTSymbol(BaseModel):
     name: str
@@ -413,6 +414,58 @@ class CallSiteRewriter(ast.NodeTransformer):
 
 class ASTEngine:
     @staticmethod
+    def _raw_slice(lines: List[str], node: ast.AST) -> str:
+        try:
+            decos = [d.lineno for d in getattr(node, "decorator_list", []) if hasattr(d, "lineno")]
+            start = min([node.lineno] + decos) - 1
+            end = getattr(node, "end_lineno", node.lineno)
+            return "\n".join(lines[start:end])
+        except Exception:
+            return ast.unparse(node)
+
+    @staticmethod
+    def extract_imports(code: str) -> List[str]:
+        imports: List[str] = []
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return imports
+        raw_lines = code.splitlines()
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                stmt = ASTEngine._raw_slice(raw_lines, node).strip()
+                if stmt and stmt not in imports:
+                    imports.append(stmt)
+        return imports
+
+    @staticmethod
+    def ensure_imports(target_code: str, imports: Optional[List[str]]) -> str:
+        if not imports:
+            return target_code
+        existing = set(ASTEngine.extract_imports(target_code))
+        missing = [imp.strip() for imp in imports if imp.strip() and imp.strip() not in existing]
+        if not missing:
+            return target_code
+        try:
+            tree = ast.parse(target_code)
+            insert_line = 0
+            for idx, node in enumerate(tree.body):
+                if idx == 0 and isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant) and isinstance(node.value.value, str):
+                    insert_line = getattr(node, "end_lineno", node.lineno)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    insert_line = getattr(node, "end_lineno", node.lineno)
+                else:
+                    break
+            lines = target_code.splitlines(keepends=True)
+            block = "".join(m + "\n" for m in missing)
+            if insert_line == 0 and lines and lines[0].startswith("#!"):
+                insert_line = 1
+            return "".join(lines[:insert_line]) + block + "".join(lines[insert_line:])
+        except SyntaxError:
+            block = "\n".join(missing) + "\n"
+            return block + target_code
+
+    @staticmethod
     def extract_symbols(code: str, agent_id: str, lamport: int = 0) -> Dict[str, ASTSymbol]:
         symbols: Dict[str, ASTSymbol] = {}
         try:
@@ -420,6 +473,7 @@ class ASTEngine:
         except SyntaxError:
             return symbols
 
+        raw_lines = code.splitlines()
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 args = []
@@ -431,7 +485,8 @@ class ASTEngine:
                     dflt = f" = {ast.unparse(node.args.defaults[def_idx])}" if def_idx >= 0 else ""
                     args.append(f"{a.arg}{ann}{dflt}")
                 returns = ast.unparse(node.returns) if node.returns else "Any"
-                sig = f"def {node.name}({', '.join(args)}) -> {returns}"
+                prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+                sig = f"{prefix} {node.name}({', '.join(args)}) -> {returns}"
                 sig_hash = hashlib.sha256(sig.encode()).hexdigest()[:10]
                 body_src = "\n".join(ast.unparse(stmt) for stmt in node.body)
                 body_hash = hashlib.sha256(body_src.encode()).hexdigest()[:10]
@@ -441,7 +496,7 @@ class ASTEngine:
                     signature=sig,
                     signature_hash=sig_hash,
                     body_hash=body_hash,
-                    source=ast.unparse(node),
+                    source=ASTEngine._raw_slice(raw_lines, node),
                     owner_agent=agent_id,
                     lamport=lamport,
                 )
@@ -449,90 +504,91 @@ class ASTEngine:
                 methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
                 sig = f"class {node.name}[{', '.join(methods)}]"
                 sig_hash = hashlib.sha256(sig.encode()).hexdigest()[:10]
-                src = ast.unparse(node)
-                body_hash = hashlib.sha256(src.encode()).hexdigest()[:10]
+                unparsed = ast.unparse(node)
+                body_hash = hashlib.sha256(unparsed.encode()).hexdigest()[:10]
                 symbols[node.name] = ASTSymbol(
                     name=node.name,
                     kind="class",
                     signature=sig,
                     signature_hash=sig_hash,
                     body_hash=body_hash,
-                    source=src,
+                    source=ASTEngine._raw_slice(raw_lines, node),
                     owner_agent=agent_id,
                     lamport=lamport,
                 )
             elif isinstance(node, ast.Assign):
                 targets = [ast.unparse(t) for t in node.targets]
                 name = targets[0]
-                src = ast.unparse(node)
-                h = hashlib.sha256(src.encode()).hexdigest()[:10]
+                unparsed = ast.unparse(node)
+                h = hashlib.sha256(unparsed.encode()).hexdigest()[:10]
                 symbols[name] = ASTSymbol(
                     name=name,
                     kind="assign",
                     signature=f"{name} = ...",
                     signature_hash=h,
                     body_hash=h,
-                    source=src,
+                    source=ASTEngine._raw_slice(raw_lines, node),
                     owner_agent=agent_id,
                     lamport=lamport,
                 )
         return symbols
 
     @staticmethod
-    def patch_source(target_code: str, symbol_name: str, new_symbol_code: str) -> str:
+    def patch_source(
+        target_code: str,
+        symbol_name: str,
+        new_symbol_code: str,
+        action: str = "upsert",
+        imports: Optional[List[str]] = None,
+    ) -> str:
         """
-        Splice new_symbol_code into target_code at AST level.
-        If symbol_name exists, replaces that AST node cleanly.
-        If symbol_name does not exist, appends it cleanly.
-        Preserves other functions, imports, and private code intact.
+        Splice new_symbol_code into target_code at top-level AST node boundaries.
+        - Preserves comments, formatting, and unrelated functions intact.
+        - Supports action='delete' to remove deleted symbols cleanly.
+        - Ensures any newly added top-level imports are present.
         """
+        target_code = ASTEngine.ensure_imports(target_code, imports)
         try:
             tree = ast.parse(target_code)
         except SyntaxError:
+            if action == "delete" or not new_symbol_code.strip():
+                return target_code
             return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
 
-        try:
-            new_tree = ast.parse(new_symbol_code)
-            if not new_tree.body:
-                return target_code
-            new_node = new_tree.body[0]
-        except SyntaxError:
-            return target_code
-
-        class SymbolReplacer(ast.NodeTransformer):
-            def __init__(self, name: str, repl: ast.AST):
-                self.name = name
-                self.replacement = repl
-                self.replaced = False
-
-            def visit_FunctionDef(self, node):
-                if node.name == self.name:
-                    self.replaced = True
-                    return self.replacement
-                return node
-
-            def visit_AsyncFunctionDef(self, node):
-                if node.name == self.name:
-                    self.replaced = True
-                    return self.replacement
-                return node
-
-            def visit_ClassDef(self, node):
-                if node.name == self.name:
-                    self.replaced = True
-                    return self.replacement
-                return node
-
-        replacer = SymbolReplacer(symbol_name, new_node)
-        updated_tree = replacer.visit(tree)
-        ast.fix_missing_locations(updated_tree)
-        if replacer.replaced:
+        if action != "delete":
             try:
-                return ast.unparse(updated_tree) + "\n"
-            except Exception:
+                new_tree = ast.parse(new_symbol_code)
+                if not new_tree.body:
+                    return target_code
+            except SyntaxError:
                 return target_code
-        else:
-            return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
+
+        lines = target_code.splitlines(keepends=True)
+        for node in tree.body:
+            matched = False
+            start = node.lineno - 1
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == symbol_name:
+                matched = True
+                start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]) - 1
+            elif isinstance(node, ast.Assign):
+                targets = [ast.unparse(t) for t in node.targets]
+                if targets and targets[0] == symbol_name:
+                    matched = True
+                    start = node.lineno - 1
+            if matched:
+                end = node.end_lineno
+                if action == "delete":
+                    while end < len(lines) and not lines[end].strip():
+                        end += 1
+                    return "".join(lines[:start]) + "".join(lines[end:])
+                repl = new_symbol_code.strip("\n") + "\n"
+                return "".join(lines[:start]) + repl + "".join(lines[end:])
+
+        if action == "delete":
+            return target_code
+        if not target_code.strip():
+            return new_symbol_code.strip() + "\n"
+        return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
 
     @staticmethod
     def compute_merkle_root(symbols: Dict[str, ASTSymbol]) -> str:
@@ -876,6 +932,7 @@ class MeshCluster:
         self._detected_cache: List[dict] = []
         self.known_machines: Dict[str, float] = {}  # machine name -> first seen
         self.active_leases: Dict[str, dict] = {}    # "where:symbol" -> {agent_id, machine, ts, file, symbol}
+        self.machine_patches: Dict[str, List[dict]] = {}  # machine name -> queued AST patches for disk sync
         self.last_file_edit_ts: float = 0.0
         self.last_coalesced_mutations: int = 0
         self._init_sqlite_wal()
@@ -1019,9 +1076,34 @@ class MeshCluster:
         node.local_micro_commits += 1
 
         targets = [target_agent] if target_agent and target_agent in self.nodes else [nid for nid in self.nodes if nid != agent_id and self.nodes[nid].online]
+        sender_label = self.agent_label(agent_id)
+        flow = self._flow(
+            "contract",
+            agent_id,
+            targets,
+            summary=f"{sender_label} shared context: {intent}",
+            detail=msg,
+            contract=[f"💬 [{sender_label}]: {msg}"],
+            bytes_sent=len(msg.encode("utf-8")),
+            machine=node.machine,
+            delivery={tid: self.delivery_mode(self.nodes[tid]) for tid in targets if tid in self.nodes},
+        )
         for tid in targets:
             if tid in self.nodes:
-                self.nodes[tid].vector_clock[agent_id] = max(self.nodes[tid].vector_clock.get(agent_id, 0), node.vector_clock[agent_id])
+                peer = self.nodes[tid]
+                peer.vector_clock[agent_id] = max(peer.vector_clock.get(agent_id, 0), node.vector_clock[agent_id])
+                peer.inbox.append({
+                    "id": secrets.token_hex(4),
+                    "flow": flow["id"],
+                    "from": agent_id,
+                    "file": node.target_module or "context",
+                    "contract": [f"💬 [Peer Message from {sender_label} on {node.machine}]: {msg}"],
+                    "patches": [],
+                    "time": time.strftime("%H:%M:%S"),
+                    "delivered": "",
+                    "is_gossip": True,
+                })
+                peer.inbox = peer.inbox[-20:]
 
         self.metrics["micro_mutations_absorbed"] += 1
         self.metrics["gossip_packets_routed"] += 1
@@ -1172,10 +1254,16 @@ class MeshCluster:
         return winner.agent_id
 
     def workspace_repos(self) -> List[dict]:
+        seen_roots = set()
+        repos = []
         for a in self._detected_cache:
-            if os.path.normcase(a["workspace"]["path"]) == self.workspace:
-                return a["workspace"]["repos"]
-        return []
+            if self.in_workspace(a, self.workspace):
+                for r in (a.get("workspace") or {}).get("repos") or []:
+                    root = r.get("root")
+                    if root and root not in seen_roots:
+                        seen_roots.add(root)
+                        repos.append(r)
+        return repos
 
     def machines(self) -> List[dict]:
         out: Dict[str, dict] = {}
@@ -1769,7 +1857,14 @@ class MeshCluster:
         seen = set()
         for a in mine:
             if a["engine"] in ("Claude Code", "Antigravity"):
-                a["hook_installed"] = gitpulse_hook.installed_for(a["engine"], a["cwd"])
+                have_hook = gitpulse_hook.installed_for(a["engine"], a["cwd"])
+                if not have_hook and (a.get("workspace") or {}).get("repos"):
+                    try:
+                        gitpulse_hook.install_for(a["engine"], a["cwd"], f"http://127.0.0.1:{PORT}", SESSION_CODE)
+                        have_hook = True
+                    except Exception:
+                        pass
+                a["hook_installed"] = have_hook
             self.upsert_live_agent(a, "local")
             seen.add(a["agent_id"])
         now = time.time()
