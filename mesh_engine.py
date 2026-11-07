@@ -380,6 +380,62 @@ class ASTEngine:
         return symbols
 
     @staticmethod
+    def patch_source(target_code: str, symbol_name: str, new_symbol_code: str) -> str:
+        """
+        Splice new_symbol_code into target_code at AST level.
+        If symbol_name exists, replaces that AST node cleanly.
+        If symbol_name does not exist, appends it cleanly.
+        Preserves other functions, imports, and private code intact.
+        """
+        try:
+            tree = ast.parse(target_code)
+        except SyntaxError:
+            return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
+
+        try:
+            new_tree = ast.parse(new_symbol_code)
+            if not new_tree.body:
+                return target_code
+            new_node = new_tree.body[0]
+        except SyntaxError:
+            return target_code
+
+        class SymbolReplacer(ast.NodeTransformer):
+            def __init__(self, name: str, repl: ast.AST):
+                self.name = name
+                self.replacement = repl
+                self.replaced = False
+
+            def visit_FunctionDef(self, node):
+                if node.name == self.name:
+                    self.replaced = True
+                    return self.replacement
+                return node
+
+            def visit_AsyncFunctionDef(self, node):
+                if node.name == self.name:
+                    self.replaced = True
+                    return self.replacement
+                return node
+
+            def visit_ClassDef(self, node):
+                if node.name == self.name:
+                    self.replaced = True
+                    return self.replacement
+                return node
+
+        replacer = SymbolReplacer(symbol_name, new_node)
+        updated_tree = replacer.visit(tree)
+        ast.fix_missing_locations(updated_tree)
+        if replacer.replaced:
+            try:
+                return ast.unparse(updated_tree) + "\n"
+            except Exception:
+                return target_code
+        else:
+            return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
+
+    @staticmethod
     def compute_merkle_root(symbols: Dict[str, ASTSymbol]) -> str:
         """Deterministic Merkle root over sorted AST symbol table."""
         leaves = []
@@ -703,6 +759,9 @@ class MeshCluster:
             "private_edits_suppressed": 0,
             "gossip_packets_routed": 0,
             "conflicts_auto_resolved": 0,
+            "collisions_preempted": 0,
+            "ast_patches_synced": 0,
+            "git_coalesce_commits": 0,
             "ast_merges_completed": 0,
             "leader_failovers": 0,
             "speculative_branches_pruned": 0,
@@ -717,6 +776,9 @@ class MeshCluster:
         self.watcher = agent_detect.RepoWatcher()
         self._detected_cache: List[dict] = []
         self.known_machines: Dict[str, float] = {}  # machine name -> first seen
+        self.active_leases: Dict[str, dict] = {}    # "where:symbol" -> {agent_id, machine, ts, file, symbol}
+        self.last_file_edit_ts: float = 0.0
+        self.last_coalesced_mutations: int = 0
         self._init_sqlite_wal()
         self._init_workspace_git()
         self._record_dag("system", "EPOCH-FLUSH", "Genesis AST mesh snapshot")
@@ -1612,15 +1674,29 @@ class MeshCluster:
             self.upsert_live_agent(a, "local")
             seen.add(a["agent_id"])
         now = time.time()
-        for aid, n in self.nodes.items():
+        stale_to_delete = []
+        for aid, n in list(self.nodes.items()):
             gone = (n.source == "local" and aid not in seen) or (n.source == "remote" and now - n.last_seen > 20)
             if gone and n.online:
                 n.online = False
                 self._flow("leave", aid, [], summary=f"{self.agent_label(aid)} on {n.machine} stopped", machine=n.machine)
                 if n.is_leader:
                     self.elect_new_leader()
+            if not n.online and n.source != "demo":
+                # Stale local agents whose process terminated or remote agents offline > 30s get pruned completely
+                if n.source == "local" or (now - n.last_seen > 30):
+                    stale_to_delete.append(aid)
+
+        for aid in stale_to_delete:
+            n = self.nodes.get(aid)
+            if n:
+                if n.is_leader:
+                    self.elect_new_leader()
+                del self.nodes[aid]
+
         for m in machines_before - self.online_machines():
             self._flow("machine_left", "", [], summary=f"Machine {m} disconnected", machine=m)
+            self.known_machines.pop(m, None)
         after = {k: (n.online, n.meta.get("status")) for k, n in self.nodes.items()}
         return before != after
 
@@ -1665,6 +1741,49 @@ class MeshCluster:
         label = self.agent_label(agent_id)
         file_bytes = len(new.encode("utf-8"))
         where = f"{repo}/{rel_path}" if repo else rel_path
+        now = time.time()
+        self.last_file_edit_ts = now
+
+        # Feature B: Conflict Pre-emption (Live Collision Detection)
+        touched_symbols = added + sig_changed + body_changed
+        collisions = []
+        for sym in touched_symbols:
+            lease_key = f"{where}:{sym}"
+            prev_lease = self.active_leases.get(lease_key)
+            if prev_lease and prev_lease.get("agent_id") != agent_id and (now - prev_lease.get("ts", 0) < 60):
+                collisions.append((sym, prev_lease))
+            self.active_leases[lease_key] = {
+                "agent_id": agent_id,
+                "machine": node.machine,
+                "ts": now,
+                "file": where,
+                "symbol": sym,
+            }
+
+        if collisions:
+            for sym, prev in collisions:
+                other_label = self.agent_label(prev["agent_id"])
+                other_node = self.nodes.get(prev["agent_id"])
+                col_summary = f"COLLISION PRE-EMPTED: {label} & {other_label} both editing '{sym}' in {where}!"
+                col_detail = f"Concurrent AST edits detected. Coordinate before committing to avoid merge conflicts."
+                self._flow(
+                    "collision", agent_id, [prev["agent_id"]],
+                    summary=col_summary, detail=col_detail,
+                    file=where, symbol=sym, machine=node.machine,
+                )
+                self.metrics["collisions_preempted"] = self.metrics.get("collisions_preempted", 0) + 1
+                self.log_event("COLLISION-ALERT", f"[{label} <-> {other_label}] Conflict pre-empted on {where}:{sym}")
+                col_warning = f"⚠️ [GitPulse Collision Warning] {other_label} is also actively editing '{sym}' in {where}. Coordinate to avoid collisions!"
+                node.inbox.append({
+                    "id": secrets.token_hex(4), "from": prev["agent_id"], "file": where,
+                    "contract": [col_warning], "time": time.strftime("%H:%M:%S"), "delivered": "", "is_collision": True,
+                })
+                if other_node:
+                    other_warning = f"⚠️ [GitPulse Collision Warning] {label} is also actively editing '{sym}' in {where}. Coordinate to avoid collisions!"
+                    other_node.inbox.append({
+                        "id": secrets.token_hex(4), "from": agent_id, "file": where,
+                        "contract": [other_warning], "time": time.strftime("%H:%M:%S"), "delivered": "", "is_collision": True,
+                    })
 
         if not contract:
             self.metrics["private_edits_suppressed"] += 1
@@ -1700,6 +1819,25 @@ class MeshCluster:
         if removed:
             verb.append(f"removed {', '.join(removed[:3])}")
         summary = f"{label} {' and '.join(verb)} in {where}"
+
+        # Feature A: Prepare non-conflicting AST patches
+        patches = []
+        for k in added + sig_changed:
+            if k in new_syms and new_syms[k].source:
+                patches.append({
+                    "symbol": k,
+                    "code": new_syms[k].source,
+                    "file": where,
+                    "repo": repo,
+                    "path": rel_path,
+                })
+
+        # Apply non-conflicting AST patch to local worktrees on disk
+        for p in patches:
+            synced = self.sync_patch_to_disk(agent_id, p["repo"], p["path"], p["symbol"], p["code"])
+            if synced:
+                self.metrics["ast_patches_synced"] = self.metrics.get("ast_patches_synced", 0) + 1
+
         flow = self._flow(
             "contract", agent_id, peers,
             summary=summary,
@@ -1711,7 +1849,7 @@ class MeshCluster:
             peer = self.nodes[p]
             peer.vector_clock = VectorClock.merge(peer.vector_clock, node.vector_clock)
             peer.inbox.append({"id": secrets.token_hex(4), "flow": flow["id"], "from": agent_id, "file": where,
-                               "contract": lines[:8], "time": time.strftime("%H:%M:%S"), "delivered": ""})
+                               "contract": lines[:8], "patches": patches, "time": time.strftime("%H:%M:%S"), "delivered": ""})
             peer.inbox = peer.inbox[-20:]
             for k in added + sig_changed:
                 peer.known_peer_symbols[f"{rel_path}:{k}"] = new_syms[k]
@@ -1766,7 +1904,96 @@ class MeshCluster:
             "from": x["from"], "from_label": self.agent_label(x["from"]),
             "machine": self.nodes[x["from"]].machine if x["from"] in self.nodes else "?",
             "file": x["file"], "contract": x["contract"],
+            "patches": x.get("patches", []),
+            "is_collision": x.get("is_collision", False),
         } for x in pending]
+
+    def sync_patch_to_disk(self, source_agent_id: str, repo: str, rel_path: str, symbol_name: str, new_symbol_code: str) -> bool:
+        """
+        Applies a non-conflicting AST patch to physical repositories on disk across the session workspace.
+        """
+        applied_any = False
+        target_roots = []
+        if self.workspace and Path(self.workspace).is_dir():
+            target_roots.append(self.workspace)
+        for a in self._detected_cache:
+            for r in (a.get("workspace") or {}).get("repos") or []:
+                if r.get("root") and r["root"] not in target_roots and Path(r["root"]).is_dir():
+                    target_roots.append(r["root"])
+
+        for root in target_roots:
+            candidates = [
+                Path(root) / rel_path,
+                Path(root) / repo / rel_path if repo else None,
+            ]
+            for p in candidates:
+                if p and p.is_file() and p.suffix == ".py":
+                    try:
+                        content = p.read_text(encoding="utf-8")
+                        patched = ASTEngine.patch_source(content, symbol_name, new_symbol_code)
+                        if patched != content:
+                            p.write_text(patched, encoding="utf-8")
+                            applied_any = True
+                            self.log_event("PATCH-SYNC", f"Applied AST patch for '{symbol_name}' to {p.name}")
+                    except Exception as e:
+                        self.log_event("PATCH-ERROR", f"Failed to patch {p}: {e}")
+        return applied_any
+
+    def coalesce_to_git(self, repo_name: Optional[str] = None) -> List[dict]:
+        """
+        Feature C: Coalesce pending AST micro-mutations into real, clean Git commits on tracked repos.
+        """
+        results = []
+        repo_roots = []
+        for a in self._detected_cache:
+            for r in (a.get("workspace") or {}).get("repos") or []:
+                if r.get("root") and r["root"] not in [x["root"] for x in repo_roots]:
+                    repo_roots.append(r)
+
+        if not repo_roots and self.workspace and Path(self.workspace, ".git").is_dir():
+            repo_roots.append({"root": self.workspace, "name": Path(self.workspace).name, "branch": "main"})
+
+        for r in repo_roots:
+            root = r["root"]
+            rname = r.get("name") or Path(root).name
+            if repo_name and rname != repo_name:
+                continue
+            if not Path(root, ".git").exists():
+                continue
+
+            try:
+                st_proc = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True)
+                changes = [line for line in st_proc.stdout.splitlines() if line.strip() and not line.strip().startswith("?? .gitpulse")]
+                if not changes:
+                    continue
+
+                subprocess.run(["git", "add", "-u"], cwd=root, capture_output=True)
+                active_labels = [self.agent_label(n.agent_id) for n in self.nodes.values() if n.online and n.source != "demo"]
+                agents_str = ", ".join(active_labels[:3]) or "gitpulse"
+                mutations = max(1, self.metrics.get("micro_mutations_absorbed", 0) - self.last_coalesced_mutations)
+                commit_msg = f"gitpulse: sync AST mutations ({mutations} edits) [{agents_str}]"
+
+                c_proc = subprocess.run(["git", "commit", "-m", commit_msg], cwd=root, capture_output=True, text=True)
+                if c_proc.returncode == 0:
+                    rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True)
+                    sha = rev.stdout.strip()
+                    br_proc = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root, capture_output=True, text=True)
+                    br = br_proc.stdout.strip() or "main"
+                    self.metrics["git_coalesce_commits"] = self.metrics.get("git_coalesce_commits", 0) + 1
+                    self.last_coalesced_mutations = self.metrics.get("micro_mutations_absorbed", 0)
+                    self._flow(
+                        "commit", self.leader_id or "system", [],
+                        summary=f"Git commit {sha} in {rname} ({len(changes)} file{'s' if len(changes) != 1 else ''} coalesced)",
+                        detail=f"Branch '{br}': {commit_msg}",
+                        repo=rname, commit_sha=sha, branch=br,
+                    )
+                    self.log_event("GIT-COALESCE", f"Created Git commit {sha} on {rname}:{br} ({commit_msg})")
+                    results.append({"status": "ok", "repo": rname, "sha": sha, "branch": br, "files": len(changes)})
+            except Exception as e:
+                self.log_event("GIT-ERROR", f"Git coalesce failed on {root}: {e}")
+                results.append({"status": "error", "repo": rname, "error": str(e)})
+
+        return results
 
     def install_hook(self, agent_id: str) -> str:
         n = self.nodes[agent_id]
@@ -1798,6 +2025,12 @@ class MeshCluster:
         self.sync_detected(agents)
         for aid, repo, rel, old, new, how in await asyncio.to_thread(self.scan_repos_for_changes):
             self.record_file_change(aid, repo, rel, old, new, how)
+
+        # Auto-coalesce to real git when idle for 15s after absorbing mutations
+        pending = self.metrics.get("micro_mutations_absorbed", 0) - self.last_coalesced_mutations
+        if pending > 0 and self.last_file_edit_ts > 0 and (time.time() - self.last_file_edit_ts >= 15.0):
+            await asyncio.to_thread(self.coalesce_to_git)
+
         await self.broadcast_ui()
 
     async def scan_and_prompt_agents(self) -> dict:
@@ -1936,7 +2169,32 @@ async def partition_node(agent_id: str):
 
 @app.post("/api/flush")
 async def flush_to_github():
-    return await mesh.atomic_github_flush()
+    coalesced = await asyncio.to_thread(mesh.coalesce_to_git)
+    flush_res = await mesh.atomic_github_flush()
+    return {"status": "ok", "coalesced": coalesced, "flush": flush_res}
+
+
+@app.post("/api/git/coalesce")
+async def git_coalesce_endpoint():
+    res = await asyncio.to_thread(mesh.coalesce_to_git)
+    await mesh.broadcast_ui()
+    return {"status": "ok", "coalesced": res}
+
+
+class ApplyPatchRequest(BaseModel):
+    repo: str = ""
+    path: str
+    symbol: str
+    code: str
+
+
+@app.post("/api/sync/apply_patch")
+async def apply_patch_endpoint(req: ApplyPatchRequest):
+    applied = mesh.sync_patch_to_disk("api", req.repo, req.path, req.symbol, req.code)
+    if applied:
+        mesh.metrics["ast_patches_synced"] = mesh.metrics.get("ast_patches_synced", 0) + 1
+        await mesh.broadcast_ui()
+    return {"status": "ok" if applied else "not_modified"}
 
 
 @app.get("/api/lan")
