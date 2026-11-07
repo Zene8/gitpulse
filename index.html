@@ -2,466 +2,421 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>GitPulse // Distributed Agent AST Mesh & Version Control</title>
+  <title>GITPULSE</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    @keyframes pulseDash {
-      to { stroke-dashoffset: -24; }
+    * { border-radius: 0 !important; box-sizing: border-box; }
+    body {
+      background: #050505;
+      color: #f5f5f5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      margin: 0;
+      user-select: none;
     }
-    .gossip-line {
-      stroke-dasharray: 6 6;
-      animation: pulseDash 0.8s linear infinite;
+    .grid-bg {
+      background-image:
+        linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 32px 32px;
     }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #0c0a09; }
-    ::-webkit-scrollbar-thumb { background: #292524; border-radius: 3px; }
+    @keyframes floatSlow {
+      0%, 100% { transform: translate(0px, 0px); }
+      50% { transform: translate(4px, -7px); }
+    }
+    @keyframes shootUp {
+      0% { stroke-dashoffset: 180; opacity: 1; }
+      100% { stroke-dashoffset: 0; opacity: 0.15; }
+    }
+    @keyframes convergeMain {
+      0% { transform: scale(1) translateY(0); opacity: 1; }
+      100% { transform: scale(0.2) translateY(-220px); opacity: 0; }
+    }
+    .floating-card {
+      animation: floatSlow 4.2s ease-in-out infinite;
+      transition: all 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .flushing .floating-card {
+      animation: convergeMain 0.65s cubic-bezier(0.7, 0, 0.3, 1) forwards;
+    }
+    .uplink-active {
+      stroke-dasharray: 8 6;
+      animation: shootUp 0.7s linear infinite;
+    }
   </style>
 </head>
-<body class="bg-stone-950 text-stone-100 font-mono min-h-screen p-4 md:p-6 selection:bg-orange-500 selection:text-white">
-  <!-- Top Command Bar -->
-  <div class="flex flex-wrap justify-between items-center border-b border-stone-800 pb-4 mb-5 gap-4">
-    <div>
-      <div class="flex items-center gap-2.5">
-        <span class="inline-block w-2.5 h-2.5 rounded-full bg-orange-500 animate-ping"></span>
-        <h1 class="text-xl md:text-2xl font-bold tracking-tight text-white">
-          GitPulse <span class="text-orange-500">// Agent-Native AST Mesh & VCS</span>
-        </h1>
+<body class="grid-bg flex flex-col justify-between p-5">
+
+  <!-- ================= TOP: GITHUB MAIN FORGE ================= -->
+  <header class="z-20 flex items-center justify-between border border-neutral-800 bg-black/90 px-4 py-2.5">
+    <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 bg-white inline-block"></span>
+        <span class="text-xs font-bold tracking-[0.2em] uppercase">GITHUB // MAIN</span>
       </div>
-      <p class="text-xs text-stone-400 mt-1">
-        Tree-Level AST Hashing • Causal Vector Clocks • Offline-Resilient Speculation • Epoch Git Compaction
-      </p>
+      <div class="h-3 w-[1px] bg-neutral-800"></div>
+      <!-- Unified PRs / Atomic Commits landed on main -->
+      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[46vw]">
+        <span class="text-[10px] text-neutral-600 tracking-widest">NO PR MERGED YET</span>
+      </div>
     </div>
-    <div class="flex flex-wrap gap-2.5">
-      <button onclick="stepSim()" class="bg-stone-800 hover:bg-stone-700 text-white px-3.5 py-2 rounded border border-stone-600 text-xs font-semibold transition flex items-center gap-1.5">
-        <span>⚡</span> Simulate Agent Mutation
+
+    <!-- Minimal Sharp Controls -->
+    <div class="flex items-center gap-2">
+      <div class="hidden md:flex items-center gap-4 mr-4 text-[10px] text-neutral-500 tracking-wider">
+        <span>IDEAS <strong id="k-ideas" class="text-white">0</strong></span>
+        <span>LOCAL <strong id="k-local" class="text-emerald-400">0</strong></span>
+        <span>ADAPTED <strong id="k-adapt" class="text-amber-400">0</strong></span>
+        <span>PRs <strong id="k-prs" class="text-orange-500">0</strong></span>
+      </div>
+      <button onclick="stepSim()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-white px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
+        + IDEA
       </button>
-      <button onclick="runSpeculation()" class="bg-indigo-950/90 hover:bg-indigo-900 text-indigo-200 px-3.5 py-2 rounded border border-indigo-600 text-xs font-semibold transition flex items-center gap-1.5">
-        <span>🧬</span> Fork 3x Speculative Branches
+      <button onclick="runSpeculation()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-indigo-400 text-indigo-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
+        3X RACE
       </button>
-      <button id="autopilot-btn" onclick="toggleAutopilot()" class="bg-stone-900 hover:bg-stone-800 text-stone-300 px-3.5 py-2 rounded border border-stone-700 text-xs font-semibold transition">
-        ▶️ Auto-Loop: OFF
+      <button id="auto-btn" onclick="toggleAuto()" class="border border-neutral-800 bg-black hover:border-neutral-500 text-neutral-400 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
+        AUTO
       </button>
-      <button onclick="flushGitHub()" class="bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded text-xs font-semibold shadow-lg shadow-orange-950/50 transition flex items-center gap-1.5">
-        <span>🚀</span> Atomic Flush to GitHub
+      <button onclick="flushGitHub()" class="border border-orange-500 bg-orange-600 hover:bg-orange-500 text-black font-bold px-3.5 py-1.5 text-[10px] tracking-widest uppercase transition">
+        ↑ MERGE PR TO MAIN
       </button>
     </div>
-  </div>
+  </header>
 
-  <!-- Telemetry KPI Strip -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5 mb-5">
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded">
-      <div class="text-[11px] text-stone-400">Micro-Edits Absorbed</div>
-      <div id="m-absorbed" class="text-2xl font-bold text-white mt-0.5">0</div>
-    </div>
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded">
-      <div class="text-[11px] text-stone-400">Private AST Suppressed</div>
-      <div id="m-suppressed" class="text-2xl font-bold text-emerald-400 mt-0.5">0</div>
-    </div>
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded">
-      <div class="text-[11px] text-stone-400">Gossip Deltas Routed</div>
-      <div id="m-gossip" class="text-2xl font-bold text-sky-400 mt-0.5">0</div>
-    </div>
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded">
-      <div class="text-[11px] text-stone-400">Contracts Auto-Adapted</div>
-      <div id="m-conflicts" class="text-2xl font-bold text-amber-400 mt-0.5">0</div>
-    </div>
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded">
-      <div class="text-[11px] text-stone-400">Speculative Pruned</div>
-      <div id="m-pruned" class="text-2xl font-bold text-indigo-400 mt-0.5">0</div>
-    </div>
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded">
-      <div class="text-[11px] text-stone-400">Atomic Git Commits</div>
-      <div id="m-github" class="text-2xl font-bold text-orange-500 mt-0.5">0</div>
-    </div>
-    <div class="bg-stone-900/90 border border-stone-800 p-3 rounded col-span-2 sm:col-span-1">
-      <div class="text-[11px] text-stone-400">CI / Forge Bandwidth Saved</div>
-      <div id="m-bytes" class="text-2xl font-bold text-emerald-400 mt-0.5">0 KB</div>
-    </div>
-  </div>
 
-  <!-- Top Visual Row: Live Topology SVG + Speculative Execution Arbiter -->
-  <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-5">
-    <!-- Live P2P Gossip & Epoch Compaction Topology -->
-    <div class="lg:col-span-7 bg-stone-900/80 border border-stone-800 rounded p-4 flex flex-col justify-between">
-      <div class="flex justify-between items-center mb-2">
-        <span class="text-xs uppercase tracking-wider text-stone-400 font-semibold">
-          Live P2P AST Gossip Topology & Epoch Compaction Link
-        </span>
-        <span id="beam-badge" class="text-[11px] px-2 py-0.5 rounded bg-stone-800 text-stone-300 border border-stone-700">
-          Mesh Idle
-        </span>
-      </div>
-      <div class="relative w-full h-56 bg-stone-950/80 rounded border border-stone-800/80 overflow-hidden flex items-center justify-center">
-        <svg id="topology-svg" viewBox="0 0 680 220" class="w-full h-full"></svg>
-      </div>
-      <div class="flex flex-wrap justify-between items-center text-[11px] text-stone-400 mt-2 gap-2">
-        <div class="flex items-center gap-3">
-          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span> Online Peer</span>
-          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span> Partitioned (CRDT Buffering)</span>
-          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-sky-400 inline-block"></span> AST Signature Gossip</span>
-        </div>
-        <span>Click any node card below to sever/restore link or edit live code</span>
-      </div>
-    </div>
+  <!-- ================= MIDDLE: THE INTERMITTENT MESH CLOUD ================= -->
+  <main class="relative flex-1 my-3 flex items-center justify-center overflow-hidden">
+    <!-- Full-canvas SVG for Cloud Silhouette + Uplink Beams + PR Merge Beams -->
+    <svg id="scene-svg" viewBox="0 0 1200 540" preserveAspectRatio="none" class="absolute inset-0 w-full h-full pointer-events-none">
+      <defs>
+        <radialGradient id="cloudGlow" cx="50%" cy="48%" r="48%">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.06"/>
+          <stop offset="65%" stop-color="#f97316" stop-opacity="0.025"/>
+          <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="blurGlow">
+          <feGaussianBlur stdDeviation="16" />
+        </filter>
+      </defs>
 
-    <!-- Speculative Branching & Unit-Test Arbiter -->
-    <div class="lg:col-span-5 bg-stone-900/80 border border-stone-800 rounded p-4 flex flex-col justify-between">
-      <div class="flex justify-between items-center mb-2">
-        <div>
-          <span class="text-xs uppercase tracking-wider text-stone-400 font-semibold">
-            Speculative Execution Pool & Unit-Test Arbiter
-          </span>
-        </div>
-        <button onclick="runSpeculation()" class="text-[11px] bg-indigo-900/70 hover:bg-indigo-800 text-indigo-200 px-2.5 py-0.5 rounded border border-indigo-700 transition">
-          Run 3-Way Race
-        </button>
-      </div>
-      <div id="speculative-container" class="space-y-2 my-auto">
-        <div class="text-xs text-stone-500 bg-stone-950/70 border border-stone-800/80 rounded p-4 text-center">
-          Click <span class="text-indigo-300 font-semibold">"Fork 3x Speculative Branches"</span> to spin up 3 ephemeral sandbox branches in parallel, run automated unit assertions + latency benchmarks, merge the winner, and prune failed AST nodes.
-        </div>
-      </div>
-      <div class="text-[11px] text-stone-500 mt-2 border-t border-stone-800/80 pt-2 flex justify-between">
-        <span>Target: <code class="text-stone-300">services/gateway.py :: route_request</code></span>
-        <span>Arbiter: <span class="text-emerald-400">4 Security & Route Assertions</span></span>
-      </div>
-    </div>
-  </div>
+      <!-- Ambient Cloud Core Glow -->
+      <ellipse cx="600" cy="255" rx="430" ry="165" fill="url(#cloudGlow)" filter="url(#blurGlow)" />
 
-  <!-- Agent Nodes Grid -->
-  <div id="nodes-container" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5"></div>
+      <!-- Actual Cloud Silhouette (Sharp Architectural Double-Contour Cloud) -->
+      <path id="cloud-outer"
+        d="M 270 345
+           L 205 345
+           C 145 345, 115 300, 130 250
+           C 140 210, 180 185, 225 190
+           C 250 125, 330 95, 410 120
+           C 465 65, 585 55, 665 105
+           C 740 70, 845 95, 885 160
+           C 955 155, 1025 195, 1035 255
+           C 1045 310, 995 345, 935 345
+           Z"
+        fill="rgba(14, 14, 14, 0.72)"
+        stroke="#262626"
+        stroke-width="1.5" />
 
-  <!-- Bottom Row: Content-Addressed AST DAG (with Rollback) + Causal Vector Log -->
-  <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-    <!-- AST Commit DAG -->
-    <div class="lg:col-span-6 bg-stone-900/90 border border-stone-800 rounded p-4">
-      <div class="flex justify-between items-center mb-3">
-        <span class="text-xs uppercase tracking-wider text-stone-400 font-semibold">
-          Content-Addressed AST Commit DAG (Semantic Rollback Ready)
-        </span>
-        <span class="text-[11px] text-stone-500">Click any commit to rollback mesh</span>
-      </div>
-      <div id="dag-log" class="space-y-2 max-h-64 overflow-y-auto pr-1"></div>
+      <!-- Inner Dashed Technical Cloud Boundary -->
+      <path
+        d="M 280 333
+           L 215 333
+           C 162 333, 135 295, 148 252
+           C 158 218, 192 198, 232 202
+           C 256 142, 332 112, 408 135
+           C 462 82, 578 72, 655 120
+           C 728 88, 828 110, 868 172
+           C 935 168, 1002 204, 1012 255
+           C 1020 302, 978 333, 922 333
+           Z"
+        fill="none"
+        stroke="#404040"
+        stroke-width="0.75"
+        stroke-dasharray="4 6" />
+
+      <!-- Dynamic Lines Layer (Uplinks from Agents -> Cloud & Cloud -> GitHub) -->
+      <g id="beams-layer"></g>
+    </svg>
+
+    <!-- Cloud Center Watermark Label -->
+    <div class="pointer-events-none z-0 text-center">
+      <div class="text-[10px] tracking-[0.35em] text-neutral-600 uppercase">INTERMITTENT AST GOSSIP CLOUD</div>
+      <div id="cloud-status" class="text-[9px] tracking-[0.2em] text-neutral-700 uppercase mt-1">FLOATING DIFFS &amp; INTENT VECTORS</div>
     </div>
 
-    <!-- Live Mesh Gossip & Consensus Feed -->
-    <div class="lg:col-span-6 bg-stone-900/90 border border-stone-800 rounded p-4">
-      <div class="flex justify-between items-center mb-3">
-        <span class="text-xs uppercase tracking-wider text-stone-400 font-semibold">
-          Live Distributed Mesh & Causal Vector Log
-        </span>
-        <span class="text-[11px] text-stone-500">Real-time CRDT & Gossip stream</span>
-      </div>
-      <div id="event-log" class="space-y-1.5 text-xs max-h-64 overflow-y-auto font-mono pr-1"></div>
-    </div>
-  </div>
+    <!-- Floating Ideas & Git Diffs Inside the Cloud -->
+    <div id="cloud-field" class="absolute inset-0 z-10 pointer-events-none"></div>
+  </main>
+
+
+  <!-- ================= BOTTOM: AGENTS ROW ================= -->
+  <footer id="agents-row" class="z-20 grid grid-cols-3 gap-4"></footer>
+
 
   <script>
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-    let latestState = null;
-    let autopilotTimer = null;
-    const draftCode = {};
+    let autoTimer = null;
+    let flushingAnim = false;
+    let unmergedItems = [];
+    let mergedPRs = [];
+    let lastDagLen = 0;
+
+    // Fixed spatial slots inside the Cloud silhouette so cards spread cleanly
+    const CLOUD_SLOTS = [
+      { left: '16%', top: '34%' },
+      { left: '34%', top: '20%' },
+      { left: '53%', top: '18%' },
+      { left: '70%', top: '26%' },
+      { left: '24%', top: '50%' },
+      { left: '46%', top: '46%' },
+      { left: '66%', top: '49%' },
+      { left: '38%', top: '33%' },
+    ];
+
+    const AGENT_X = {
+      'agent-auth': 200,
+      'agent-billing': 600,
+      'agent-gateway': 1000
+    };
 
     ws.onmessage = (event) => {
       const state = JSON.parse(event.data);
-      latestState = state;
-      updateMetrics(state.metrics);
-      renderTopology(state.nodes, state.beam);
-      renderSpeculative(state.speculative_runs);
-      renderNodes(state.nodes);
-      renderDAG(state.dag);
-      renderEvents(state.events);
+      updateKPIs(state.metrics);
+      processDAG(state.dag, state.speculative_runs);
+      renderBeams(state.nodes, state.beam);
+      renderCloudField(state.nodes);
+      renderAgents(state.nodes);
     };
 
-    function updateMetrics(m) {
-      document.getElementById('m-absorbed').innerText = m.micro_mutations_absorbed;
-      document.getElementById('m-suppressed').innerText = m.private_edits_suppressed;
-      document.getElementById('m-gossip').innerText = m.gossip_packets_routed;
-      document.getElementById('m-conflicts').innerText = m.conflicts_auto_resolved;
-      document.getElementById('m-pruned').innerText = m.speculative_branches_pruned || 0;
-      document.getElementById('m-github').innerText = m.atomic_github_pushes;
-      document.getElementById('m-bytes').innerText = (m.bytes_saved / 1024).toFixed(1) + ' KB';
+    function updateKPIs(m) {
+      document.getElementById('k-ideas').innerText = m.micro_mutations_absorbed;
+      document.getElementById('k-local').innerText = m.private_edits_suppressed;
+      document.getElementById('k-adapt').innerText = m.conflicts_auto_resolved;
+      document.getElementById('k-prs').innerText = m.atomic_github_pushes;
     }
 
-    function renderTopology(nodes, beam) {
-      const svg = document.getElementById('topology-svg');
-      const coords = {
-        'agent-auth': { x: 115, y: 55, label: 'agent-auth', sub: 'auth.py' },
-        'agent-billing': { x: 115, y: 165, label: 'agent-billing', sub: 'billing.py' },
-        'agent-gateway': { x: 345, y: 110, label: 'agent-gateway', sub: 'gateway.py' },
-        'github': { x: 575, y: 110, label: 'GitHub Forge', sub: 'main branch' }
-      };
+    function processDAG(dag, specRuns) {
+      if (!dag) return;
+      // Extract merged Epoch Flushes for the top GitHub bar
+      mergedPRs = dag.filter(c => c.kind === 'EPOCH-FLUSH' && c.git_sha);
+      const mainBar = document.getElementById('main-commits');
+      if (mergedPRs.length === 0) {
+        mainBar.innerHTML = `<span class="text-[10px] text-neutral-600 tracking-widest">WAITING FOR UNIFIED PR</span>`;
+      } else {
+        mainBar.innerHTML = mergedPRs.slice(-5).reverse().map(pr => `
+          <div onclick="rollback('${pr.commit_id}')" title="Click to rollback to ${pr.git_sha}"
+            class="cursor-pointer border border-orange-500/70 bg-orange-950/30 px-2 py-0.5 text-[10px] text-orange-300 flex items-center gap-1.5 hover:bg-orange-500 hover:text-black transition shrink-0">
+            <span class="font-bold">PR #${pr.git_sha}</span>
+            <span class="opacity-75">${pr.timestamp}</span>
+          </div>
+        `).join('');
+      }
 
-      const peerLinks = [
-        ['agent-auth', 'agent-billing'],
-        ['agent-auth', 'agent-gateway'],
-        ['agent-billing', 'agent-gateway']
-      ];
+      // Floating items inside the cloud = all commits since the last EPOCH-FLUSH
+      let lastFlushIdx = -1;
+      for (let i = dag.length - 1; i >= 0; i--) {
+        if (dag[i].kind === 'EPOCH-FLUSH') {
+          lastFlushIdx = i;
+          break;
+        }
+      }
+      unmergedItems = dag.slice(lastFlushIdx + 1);
+    }
 
-      let html = '';
+    function renderBeams(nodes, beam) {
+      const layer = document.getElementById('beams-layer');
+      let svg = '';
 
-      // Draw peer links
-      peerLinks.forEach(([a, b]) => {
-        const na = nodes[a], nb = nodes[b];
-        const ca = coords[a], cb = coords[b];
-        const severed = !(na && na.online && nb && nb.online);
-        const isBeaming = beam && beam.kind === 'gossip' &&
-          ((beam.source === a && beam.targets.includes(b)) || (beam.source === b && beam.targets.includes(a)));
-
-        const stroke = severed ? '#dc2626' : (isBeaming ? '#38bdf8' : '#44403c');
-        const width = isBeaming ? 3 : 1.8;
-        const dash = severed ? '4 4' : (isBeaming ? '6 6' : '');
-        const cls = isBeaming ? 'gossip-line' : '';
-
-        html += `<line x1="${ca.x}" y1="${ca.y}" x2="${cb.x}" y2="${cb.y}" stroke="${stroke}" stroke-width="${width}" stroke-dasharray="${dash}" class="${cls}" />`;
+      // 1. Cloud -> GitHub Main convergence funnels (top of cloud y=105 to y=0)
+      const flushing = beam && beam.kind === 'flush';
+      [420, 600, 780].forEach(x => {
+        svg += `<line x1="${x}" y1="100" x2="600" y2="0"
+          stroke="${flushing ? '#f97316' : '#1f1f1f'}"
+          stroke-width="${flushing ? 2.5 : 1}"
+          class="${flushing ? 'uplink-active' : ''}" />`;
       });
 
-      // Draw Epoch Flush links to GitHub
-      ['agent-auth', 'agent-billing', 'agent-gateway'].forEach(a => {
-        const ca = coords[a], cg = coords['github'];
-        const flushing = beam && beam.kind === 'flush';
-        const stroke = flushing ? '#f97316' : '#292524';
-        const width = flushing ? 2.8 : 1.2;
-        const cls = flushing ? 'gossip-line' : '';
-        html += `<line x1="${ca.x}" y1="${ca.y}" x2="${cg.x}" y2="${cg.y}" stroke="${stroke}" stroke-width="${width}" class="${cls}" />`;
+      // 2. Agent Docks (y=540) -> Cloud Base (y=345)
+      Object.values(nodes).forEach(n => {
+        const x = AGENT_X[n.agent_id] || 600;
+        const active = beam && beam.source === n.agent_id;
+        if (!n.online) {
+          // Severed link: red dashed line that stops halfway with an X
+          svg += `
+            <line x1="${x}" y1="540" x2="${x}" y2="430" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 4" />
+            <line x1="${x-6}" y1="424" x2="${x+6}" y2="436" stroke="#ef4444" stroke-width="1.5" />
+            <line x1="${x+6}" y1="424" x2="${x-6}" y2="436" stroke="#ef4444" stroke-width="1.5" />
+          `;
+        } else {
+          const stroke = active ? '#ffffff' : '#262626';
+          const width = active ? 2.2 : 1;
+          const cls = active ? 'uplink-active' : '';
+          svg += `<line x1="${x}" y1="540" x2="${x}" y2="345" stroke="${stroke}" stroke-width="${width}" class="${cls}" />`;
+        }
       });
 
-      // Draw Agent Nodes
-      ['agent-auth', 'agent-billing', 'agent-gateway'].forEach(id => {
-        const n = nodes[id];
-        if (!n) return;
-        const c = coords[id];
-        const fill = n.online ? '#0c0a09' : '#450a0a';
-        const stroke = n.online ? '#10b981' : '#ef4444';
-        const ring = (beam && beam.source === id) ? `<circle cx="${c.x}" cy="${c.y}" r="34" fill="none" stroke="#f97316" stroke-width="1.5" stroke-dasharray="3 3"/>` : '';
+      // 3. Internal Cloud Gossip mesh threads connecting floating slots
+      if (unmergedItems.length > 1) {
+        const pts = [
+          [280, 210], [450, 155], [640, 145], [830, 185], [350, 285], [580, 265], [790, 280]
+        ];
+        for (let i = 0; i < Math.min(unmergedItems.length - 1, pts.length - 1); i++) {
+          const [x1, y1] = pts[i];
+          const [x2, y2] = pts[i + 1];
+          svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" stroke-dasharray="2 4" />`;
+        }
+      }
 
-        html += `
-          ${ring}
-          <g transform="translate(${c.x}, ${c.y})">
-            <rect x="-62" y="-24" width="124" height="48" rx="7" fill="${fill}" stroke="${stroke}" stroke-width="2"/>
-            <text x="0" y="-4" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold">${c.label}</text>
-            <text x="0" y="12" text-anchor="middle" fill="#a8a29e" font-size="9">${c.sub} • uCommits:${n.local_micro_commits}</text>
-          </g>
-        `;
-      });
+      layer.innerHTML = svg;
 
-      // Draw GitHub Node
-      const cg = coords['github'];
-      const flushActive = beam && beam.kind === 'flush';
-      html += `
-        <g transform="translate(${cg.x}, ${cg.y})">
-          <rect x="-64" y="-28" width="128" height="56" rx="8" fill="#1c1917" stroke="${flushActive ? '#f97316' : '#78716c'}" stroke-width="2.2"/>
-          <text x="0" y="-5" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="bold">GitHub Forge</text>
-          <text x="0" y="12" text-anchor="middle" fill="#d6d3d1" font-size="9">Atomic PR Target</text>
-        </g>
-      `;
-
-      svg.innerHTML = html;
-
-      const badge = document.getElementById('beam-badge');
+      const status = document.getElementById('cloud-status');
       if (beam) {
-        if (beam.kind === 'local') {
-          badge.className = 'text-[11px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700';
-          badge.innerText = `Locality Filter: ${beam.source} private edit suppressed (0 B sent)`;
+        if (beam.kind === 'flush') {
+          status.innerText = 'COMPACTING ALL CLOUD DIFFS → 1 ATOMIC GITHUB PR';
+          status.className = 'text-[9px] tracking-[0.2em] text-orange-400 uppercase mt-1';
+        } else if (beam.kind === 'local') {
+          status.innerText = `${beam.source.toUpperCase()} // PRIVATE AST BODY DIFF (0 BYTES BROADCAST)`;
+          status.className = 'text-[9px] tracking-[0.2em] text-emerald-400 uppercase mt-1';
         } else if (beam.kind === 'gossip') {
-          badge.className = 'text-[11px] px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-700';
-          badge.innerText = `AST Gossip: ${beam.source} → ${beam.targets.join(', ') || 'none'}`;
+          status.innerText = `${beam.source.toUpperCase()} // CONTRACT DELTA GOSSIPED ACROSS CLOUD`;
+          status.className = 'text-[9px] tracking-[0.2em] text-sky-400 uppercase mt-1';
         } else if (beam.kind === 'buffered') {
-          badge.className = 'text-[11px] px-2 py-0.5 rounded bg-red-950 text-red-300 border border-red-700';
-          badge.innerText = `Offline Outbox: ${beam.source} queued contract delta`;
-        } else if (beam.kind === 'flush') {
-          badge.className = 'text-[11px] px-2 py-0.5 rounded bg-orange-950 text-orange-300 border border-orange-700';
-          badge.innerText = `Epoch Flush: Compacted into 1 Atomic Git Commit`;
+          status.innerText = `${beam.source.toUpperCase()} // LINK SEVERED — HOLDING IN LOCAL OUTBOX`;
+          status.className = 'text-[9px] tracking-[0.2em] text-red-400 uppercase mt-1';
         }
       }
     }
 
-    function renderSpeculative(runs) {
-      const container = document.getElementById('speculative-container');
-      if (!runs || runs.length === 0) return;
-      container.innerHTML = runs.map(r => {
-        const isWin = r.status === 'MERGED-WINNER';
-        const border = isWin ? 'border-emerald-600 bg-emerald-950/20' : 'border-stone-800 bg-stone-950/80 opacity-75';
-        const pill = isWin
-          ? `<span class="px-2 py-0.5 text-[10px] bg-emerald-900/80 text-emerald-200 rounded border border-emerald-600 font-bold">🏆 MERGED WINNER (${r.latency_us}µs)</span>`
-          : `<span class="px-2 py-0.5 text-[10px] bg-red-950 text-red-300 rounded border border-red-800">✂️ PRUNED (${r.latency_us}µs)</span>`;
-        return `
-          <div class="border ${border} rounded p-2.5 text-xs flex flex-col gap-1">
-            <div class="flex justify-between items-center">
-              <span class="font-bold text-white">${r.branch} <span class="text-stone-400 font-normal">// ${r.strategy}</span></span>
-              ${pill}
-            </div>
-            <div class="text-[11px] ${r.passed ? 'text-emerald-400' : 'text-red-400'}">${r.reason}</div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    function renderNodes(nodes) {
-      const container = document.getElementById('nodes-container');
-      // Save current textarea edits if user is typing
-      document.querySelectorAll('textarea[data-agent]').forEach(el => {
-        if (document.activeElement === el) {
-          draftCode[el.dataset.agent] = el.value;
-        }
-      });
-
-      container.innerHTML = '';
-      Object.values(nodes).forEach(node => {
-        const statusColor = node.online ? 'border-emerald-700/60 bg-stone-900/90' : 'border-red-600 bg-red-950/20';
-        const badge = node.online
-          ? `<span class="px-2 py-0.5 text-[10px] bg-emerald-900/60 text-emerald-300 rounded border border-emerald-700">ONLINE // SYNCED</span>`
-          : `<span class="px-2 py-0.5 text-[10px] bg-red-900/80 text-red-200 rounded border border-red-600 animate-pulse">PARTITIONED // CRDT</span>`;
-
-        const symbolsHtml = node.symbols.map(s =>
-          `<div class="text-[11px] bg-stone-950 p-1.5 rounded border border-stone-800 flex justify-between items-center gap-2">
-            <span class="text-sky-300 truncate">${s.signature}</span>
-            <span class="text-[10px] text-stone-400 shrink-0">sig:<span class="text-orange-300">#${s.signature_hash.slice(0,6)}</span> body:<span class="text-emerald-300">#${s.body_hash.slice(0,6)}</span></span>
-          </div>`
-        ).join('');
-
-        const codeVal = draftCode[node.agent_id] !== undefined ? draftCode[node.agent_id] : node.code;
-
-        container.innerHTML += `
-          <div class="border ${statusColor} rounded p-4 flex flex-col justify-between">
-            <div>
-              <div class="flex justify-between items-start mb-2">
-                <div>
-                  <div class="font-bold text-sm text-white">${node.agent_id}</div>
-                  <div class="text-[11px] text-stone-400">${node.role} (<code class="text-stone-300">${node.target_module}</code>)</div>
-                </div>
-                ${badge}
-              </div>
-
-              <div class="text-xs text-orange-300 bg-stone-950/90 p-2 rounded border border-stone-800 mb-3 truncate">
-                <span class="text-stone-500">Intent:</span> ${node.intent}
-              </div>
-
-              <div class="mb-3">
-                <div class="text-[10px] uppercase text-stone-400 mb-1 flex justify-between">
-                  <span>Exported AST Contract Table</span>
-                  <span>Sig vs Body Hash</span>
-                </div>
-                <div class="space-y-1">${symbolsHtml || '<div class="text-xs text-red-400">SyntaxError in AST</div>'}</div>
-              </div>
-
-              <div class="mb-3">
-                <div class="flex justify-between items-center mb-1">
-                  <span class="text-[10px] uppercase text-stone-400">Live Sandbox Code (Editable)</span>
-                  <button onclick="commitCustomCode('${node.agent_id}')" class="text-[10px] bg-stone-800 hover:bg-stone-700 text-emerald-300 px-2 py-0.5 rounded border border-stone-700">
-                    Commit AST Edit
-                  </button>
-                </div>
-                <textarea id="code-${node.agent_id}" data-agent="${node.agent_id}" rows="4"
-                  oninput="draftCode['${node.agent_id}'] = this.value"
-                  class="w-full text-[11px] bg-stone-950 p-2 rounded border border-stone-800 text-stone-200 font-mono focus:outline-none focus:border-orange-500">${codeVal}</textarea>
-              </div>
-            </div>
-
-            <div class="pt-3 border-t border-stone-800 flex justify-between items-center text-xs">
-              <div>
-                <span class="text-stone-400">VClock:</span> <span class="text-white">${JSON.stringify(node.vector_clock)}</span>
-                <span class="ml-2 text-stone-400">Outbox:</span> <span class="text-amber-400 font-bold">${node.outbox_size}</span>
-              </div>
-              <button onclick="togglePartition('${node.agent_id}')" class="px-2.5 py-1 rounded text-[11px] font-semibold border transition ${node.online ? 'border-red-700 text-red-300 hover:bg-red-950' : 'border-emerald-600 text-emerald-300 hover:bg-emerald-950'}">
-                ${node.online ? '✂️ Sever Link' : '🔗 Restore Link'}
-              </button>
-            </div>
-          </div>
-        `;
-      });
-    }
-
-    function renderDAG(dag) {
-      const container = document.getElementById('dag-log');
-      if (!dag) return;
-      container.innerHTML = dag.slice().reverse().map(c => {
-        let badgeColor = 'bg-stone-800 text-stone-300 border-stone-700';
-        if (c.kind === 'PRIVATE-AST') badgeColor = 'bg-emerald-950 text-emerald-300 border-emerald-700';
-        if (c.kind === 'CONTRACT-GOSSIP') badgeColor = 'bg-sky-950 text-sky-300 border-sky-700';
-        if (c.kind === 'SPECULATIVE-WIN') badgeColor = 'bg-indigo-950 text-indigo-300 border-indigo-700';
-        if (c.kind === 'EPOCH-FLUSH') badgeColor = 'bg-orange-950 text-orange-300 border-orange-700';
-        if (c.kind === 'ROLLBACK') badgeColor = 'bg-amber-950 text-amber-300 border-amber-700';
-
-        const gitBadge = c.git_sha ? `<span class="text-[10px] bg-orange-600/30 border border-orange-500 text-orange-200 px-1.5 py-0.5 rounded">git:${c.git_sha}</span>` : '';
-
-        return `
-          <div class="bg-stone-950/90 border border-stone-800 rounded p-2 text-xs flex justify-between items-center gap-2">
-            <div class="truncate">
-              <div class="flex items-center gap-1.5">
-                <span class="text-orange-400 font-bold">#${c.commit_id}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded border ${badgeColor}">${c.kind}</span>
-                <span class="text-stone-400 text-[11px]">[${c.agent_id}]</span>
-                ${gitBadge}
-              </div>
-              <div class="text-stone-300 text-[11px] truncate mt-0.5">${c.intent}</div>
-            </div>
-            <button onclick="rollbackCommit('${c.commit_id}')" class="shrink-0 text-[10px] bg-stone-900 hover:bg-stone-800 text-stone-300 px-2 py-1 rounded border border-stone-700 transition">
-              ⏪ Rollback
-            </button>
-          </div>
-        `;
-      }).join('');
-    }
-
-    function renderEvents(events) {
-      const log = document.getElementById('event-log');
-      log.innerHTML = events.slice().reverse().map(e => {
-        let color = 'text-stone-300';
-        if (e.level === 'LOCAL') color = 'text-emerald-400';
-        if (e.level === 'CONFLICT-RESOLVED') color = 'text-amber-300 font-semibold';
-        if (e.level === 'SPECULATIVE-WIN') color = 'text-indigo-300 font-semibold';
-        if (e.level === 'OFFLINE-SPECULATION' || e.level === 'ALERT') color = 'text-red-400';
-        if (e.level === 'GITHUB-FLUSH') color = 'text-orange-400 font-bold';
-        if (e.level === 'ROLLBACK') color = 'text-amber-400';
-        return `<div><span class="text-stone-600">[${e.time}]</span> <span class="${color}">[${e.level}] ${e.msg}</span></div>`;
-      }).join('');
-    }
-
-    async function stepSim() {
-      Object.keys(draftCode).forEach(k => delete draftCode[k]);
-      await fetch('/api/step', { method: 'POST' });
-    }
-    async function runSpeculation() {
-      delete draftCode['agent-gateway'];
-      await fetch('/api/speculate', { method: 'POST' });
-    }
-    async function togglePartition(id) {
-      await fetch(`/api/partition/${id}`, { method: 'POST' });
-    }
-    async function flushGitHub() {
-      await fetch('/api/flush', { method: 'POST' });
-    }
-    async function rollbackCommit(cid) {
-      Object.keys(draftCode).forEach(k => delete draftCode[k]);
-      await fetch(`/api/rollback/${cid}`, { method: 'POST' });
-    }
-    async function commitCustomCode(agentId) {
-      const el = document.getElementById(`code-${agentId}`);
-      if (!el) return;
-      const code = el.value;
-      delete draftCode[agentId];
-      await fetch('/api/mutate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agent_id: agentId,
-          code: code,
-          intent: 'Live custom AST sandbox mutation'
-        })
-      });
-    }
-    function toggleAutopilot() {
-      const btn = document.getElementById('autopilot-btn');
-      if (autopilotTimer) {
-        clearInterval(autopilotTimer);
-        autopilotTimer = null;
-        btn.innerText = '▶️ Auto-Loop: OFF';
-        btn.className = 'bg-stone-900 hover:bg-stone-800 text-stone-300 px-3.5 py-2 rounded border border-stone-700 text-xs font-semibold transition';
+    function renderCloudField() {
+      const field = document.getElementById('cloud-field');
+      if (flushingAnim) {
+        field.classList.add('flushing');
       } else {
-        autopilotTimer = setInterval(stepSim, 2200);
-        btn.innerText = '⏸️ Auto-Loop: ON';
-        btn.className = 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 px-3.5 py-2 rounded border border-emerald-600 text-xs font-semibold transition';
+        field.classList.remove('flushing');
+      }
+
+      const visible = unmergedItems.slice(-8);
+      field.innerHTML = visible.map((item, idx) => {
+        const slot = CLOUD_SLOTS[idx % CLOUD_SLOTS.length];
+        const delay = (idx * 0.45).toFixed(2);
+
+        let border = 'border-neutral-700';
+        let tagColor = 'text-neutral-400';
+        let tag = 'DIFF';
+        if (item.kind === 'PRIVATE-AST') {
+          border = 'border-emerald-500/70';
+          tagColor = 'text-emerald-400';
+          tag = 'LOCAL AST';
+        } else if (item.kind === 'CONTRACT-GOSSIP') {
+          border = 'border-sky-400/80';
+          tagColor = 'text-sky-300';
+          tag = 'CONTRACT';
+        } else if (item.kind === 'SPECULATIVE-WIN') {
+          border = 'border-indigo-400';
+          tagColor = 'text-indigo-300';
+          tag = '3X WINNER';
+        } else if (item.kind === 'OFFLINE-BUFFER') {
+          border = 'border-red-500';
+          tagColor = 'text-red-400';
+          tag = 'QUEUED';
+        }
+
+        const diffLines = (item.diff || '+ ast_mutation()').split('\n').slice(0, 2).map(line => {
+          const c = line.startsWith('-') ? 'text-red-400' : 'text-emerald-400';
+          return `<div class="${c} truncate">${escapeHtml(line)}</div>`;
+        }).join('');
+
+        return `
+          <div onclick="rollback('${item.commit_id}')"
+            title="Click to rollback mesh to #${item.commit_id}"
+            style="left: ${slot.left}; top: ${slot.top}; animation-delay: ${delay}s;"
+            class="floating-card pointer-events-auto cursor-pointer absolute w-52 bg-black/95 border ${border} p-2.5 shadow-2xl hover:border-white transition">
+            <div class="flex justify-between items-center text-[9px] tracking-widest uppercase mb-1">
+              <span class="text-white font-bold">${item.agent_id.replace('agent-', '')}</span>
+              <span class="${tagColor}">${tag} #${item.commit_id.slice(0, 4)}</span>
+            </div>
+            <div class="text-[10px] text-neutral-300 truncate mb-1.5">${escapeHtml(item.intent)}</div>
+            <div class="bg-neutral-950 border border-neutral-900 px-1.5 py-1 text-[9px] font-mono leading-tight">
+              ${diffLines}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderAgents(nodes) {
+      const container = document.getElementById('agents-row');
+      container.innerHTML = Object.values(nodes).map(n => {
+        const shortName = n.agent_id.replace('agent-', '').toUpperCase();
+        const sig = n.symbols && n.symbols[0] ? n.symbols[0].signature : n.target_module;
+        const hash = n.symbols && n.symbols[0] ? n.symbols[0].signature_hash.slice(0, 6) : '000000';
+        const onlineBorder = n.online ? 'border-neutral-800 hover:border-neutral-600' : 'border-red-600 bg-red-950/10';
+
+        return `
+          <div class="border ${onlineBorder} bg-black/95 p-3.5 flex flex-col justify-between transition">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 ${n.online ? 'bg-emerald-400' : 'bg-red-500 animate-ping'}"></span>
+                <span class="text-xs font-bold tracking-[0.2em]">${shortName}</span>
+                <span class="text-[10px] text-neutral-600">${n.target_module}</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                ${n.outbox_size > 0 ? `<span class="text-[9px] bg-red-950 text-red-300 border border-red-700 px-1.5 py-0.5">OUTBOX ${n.outbox_size}</span>` : ''}
+                <button onclick="togglePartition('${n.agent_id}')"
+                  class="border ${n.online ? 'border-neutral-800 text-neutral-400 hover:border-red-500 hover:text-red-400' : 'border-red-500 text-red-300 bg-red-950/40'} px-2 py-0.5 text-[9px] tracking-widest uppercase transition">
+                  ${n.online ? 'LINKED' : 'SEVERED'}
+                </button>
+              </div>
+            </div>
+
+            <div class="bg-neutral-950 border border-neutral-900 px-2.5 py-1.5 mb-2 flex justify-between items-center text-[10px]">
+              <span class="text-sky-300 truncate">${escapeHtml(sig)}</span>
+              <span class="text-neutral-600 ml-2 shrink-0">#${hash}</span>
+            </div>
+
+            <div class="flex justify-between items-center text-[9px] text-neutral-500 tracking-wider uppercase">
+              <span class="truncate max-w-[70%]">${escapeHtml(n.intent)}</span>
+              <span class="text-neutral-400">Δ ${n.local_micro_commits}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    async function stepSim() { await fetch('/api/step', { method: 'POST' }); }
+    async function runSpeculation() { await fetch('/api/speculate', { method: 'POST' }); }
+    async function togglePartition(id) { await fetch(`/api/partition/${id}`, { method: 'POST' }); }
+    async function rollback(cid) { await fetch(`/api/rollback/${cid}`, { method: 'POST' }); }
+
+    async function flushGitHub() {
+      flushingAnim = true;
+      renderCloudField();
+      setTimeout(async () => {
+        await fetch('/api/flush', { method: 'POST' });
+        flushingAnim = false;
+      }, 420);
+    }
+
+    function toggleAuto() {
+      const btn = document.getElementById('auto-btn');
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        btn.innerText = 'AUTO';
+        btn.className = 'border border-neutral-800 bg-black hover:border-neutral-500 text-neutral-400 px-3 py-1.5 text-[10px] tracking-widest uppercase transition';
+      } else {
+        stepSim();
+        autoTimer = setInterval(stepSim, 1800);
+        btn.innerText = 'AUTO: ON';
+        btn.className = 'border border-emerald-500 bg-emerald-950/30 text-emerald-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition';
       }
     }
   </script>

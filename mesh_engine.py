@@ -1,5 +1,5 @@
 from pathlib import Path
-import ast, asyncio, hashlib, subprocess, sys, time
+import ast, asyncio, difflib, hashlib, subprocess, sys, time
 from typing import Dict, List, Optional, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +38,7 @@ class DAGCommit(BaseModel):
     agent_id: str
     kind: str  # "PRIVATE-AST" | "CONTRACT-GOSSIP" | "SPECULATIVE-WIN" | "EPOCH-FLUSH" | "ROLLBACK"
     intent: str
+    diff: str = ""
     vector_clock: Dict[str, int]
     symbol_hashes: Dict[str, str]
     snapshot: Dict[str, str]
@@ -219,7 +220,7 @@ class MeshCluster:
                 vc[k] = max(vc.get(k, 0), v)
         return vc
 
-    def _record_dag(self, agent_id: str, kind: str, intent: str, git_sha: Optional[str] = None) -> DAGCommit:
+    def _record_dag(self, agent_id: str, kind: str, intent: str, diff: str = "", git_sha: Optional[str] = None) -> DAGCommit:
         snap = {nid: n.code for nid, n in self.nodes.items()}
         sym_hashes = {
             f"{nid}:{s.name}": f"{s.signature_hash}:{s.body_hash}"
@@ -235,6 +236,7 @@ class MeshCluster:
             agent_id=agent_id,
             kind=kind,
             intent=intent,
+            diff=diff,
             vector_clock=self._merged_vclock(),
             symbol_hashes=sym_hashes,
             snapshot=snap,
@@ -281,6 +283,14 @@ class MeshCluster:
 
     async def trigger_agent_step(self, agent_id: str, new_code: str, intent: str):
         node = self.nodes[agent_id]
+        old_lines = node.code.strip().splitlines()
+        new_lines = new_code.strip().splitlines()
+        diff_lines = [
+            l for l in difflib.unified_diff(old_lines, new_lines, lineterm="", n=0)
+            if (l.startswith("+") or l.startswith("-")) and not l.startswith("+++") and not l.startswith("---")
+        ]
+        short_diff = "\n".join(diff_lines[:3]) if diff_lines else f"+ {new_lines[-1] if new_lines else ''}"
+
         packet, sig_changed = node.mutate_code(new_code, intent)
 
         self.metrics["micro_mutations_absorbed"] += 1
@@ -293,7 +303,7 @@ class MeshCluster:
                 "LOCAL",
                 f"[{agent_id}] Private AST body edit in {node.target_module}. Signature unchanged -> 0 bytes broadcast.",
             )
-            self._record_dag(agent_id, "PRIVATE-AST", intent)
+            self._record_dag(agent_id, "PRIVATE-AST", intent, diff=short_diff)
         else:
             if not node.online:
                 node.outbox_queue.append(packet)
@@ -302,10 +312,10 @@ class MeshCluster:
                     "OFFLINE-SPECULATION",
                     f"[{agent_id}] Network severed! Contract delta buffered in CRDT outbox ({len(node.outbox_queue)} pending).",
                 )
-                self._record_dag(agent_id, "OFFLINE-BUFFER", f"[Buffered] {intent}")
+                self._record_dag(agent_id, "OFFLINE-BUFFER", f"[Buffered] {intent}", diff=short_diff)
             else:
                 await self.route_gossip(packet)
-                self._record_dag(agent_id, "CONTRACT-GOSSIP", intent)
+                self._record_dag(agent_id, "CONTRACT-GOSSIP", intent, diff=short_diff)
 
         await self.broadcast_ui()
 
