@@ -1674,15 +1674,29 @@ class MeshCluster:
             self.upsert_live_agent(a, "local")
             seen.add(a["agent_id"])
         now = time.time()
-        for aid, n in self.nodes.items():
+        stale_to_delete = []
+        for aid, n in list(self.nodes.items()):
             gone = (n.source == "local" and aid not in seen) or (n.source == "remote" and now - n.last_seen > 20)
             if gone and n.online:
                 n.online = False
                 self._flow("leave", aid, [], summary=f"{self.agent_label(aid)} on {n.machine} stopped", machine=n.machine)
                 if n.is_leader:
                     self.elect_new_leader()
+            if not n.online and n.source != "demo":
+                # Stale local agents whose process terminated or remote agents offline > 30s get pruned completely
+                if n.source == "local" or (now - n.last_seen > 30):
+                    stale_to_delete.append(aid)
+
+        for aid in stale_to_delete:
+            n = self.nodes.get(aid)
+            if n:
+                if n.is_leader:
+                    self.elect_new_leader()
+                del self.nodes[aid]
+
         for m in machines_before - self.online_machines():
             self._flow("machine_left", "", [], summary=f"Machine {m} disconnected", machine=m)
+            self.known_machines.pop(m, None)
         after = {k: (n.online, n.meta.get("status")) for k, n in self.nodes.items()}
         return before != after
 
