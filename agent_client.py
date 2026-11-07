@@ -20,6 +20,9 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# A proxy answering for a host it can't reach (530 is Cloudflare's "tunnel is gone"), not the host itself.
+GATEWAY_ERRORS = {502, 503, 504, 520, 521, 522, 523, 524, 530}
+
 
 def discover_lan_host(timeout: float = 1.2) -> str:
     """Broadcasts UDP packet on LAN port 9999 to auto-discover the GitPulse Host Server."""
@@ -68,6 +71,8 @@ class GitPulseAgent:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:  # the server answered, with an error
+            if e.code in GATEWAY_ERRORS:
+                return {"status": "error", "error": str(e), "unreachable": True}
             try:
                 return {"status": "error", **json.loads(e.read().decode("utf-8"))}
             except Exception:
@@ -457,10 +462,11 @@ def promote_to_host(session: str, port: int, old_host: str, public: bool) -> Opt
 class HostTracker:
     """Remembers the succession list and decides when / where to fail over."""
 
-    def __init__(self, server: str, session: str, rendezvous: bool):
+    def __init__(self, server: str, session: str, rendezvous: bool, takeover: bool = True):
         self.server = server
         self.session = session
         self.rendezvous = rendezvous
+        self.takeover = takeover
         self.public = server.startswith("https://")
         self.host = ""
         self.port = 8000
@@ -508,7 +514,7 @@ class HostTracker:
             if is_alive(url, self.session):
                 return "join", url
         line = self.next_in_line()
-        if self.me in line and down >= DOWN_AFTER * (line.index(self.me) + 1):
+        if self.takeover and self.me in line and down >= DOWN_AFTER * (line.index(self.me) + 1):
             print(f"[*] {self.host or 'the host'} is gone and this machine is next in line: taking over session {self.session}")
             got = promote_to_host(self.session, self.port, self.host, self.public and self.rendezvous)
             if got:
@@ -516,7 +522,7 @@ class HostTracker:
         return None
 
 
-def auto_watch_daemon(agent: GitPulseAgent, session: str, hooks: str = "ask", rendezvous: bool = True):
+def auto_watch_daemon(agent: GitPulseAgent, session: str, hooks: str = "ask", rendezvous: bool = True, takeover: bool = True):
     """Find coding agents on this machine, keep them registered, and stream their .py edits."""
     try:
         import agent_detect
@@ -527,7 +533,7 @@ def auto_watch_daemon(agent: GitPulseAgent, session: str, hooks: str = "ask", re
     host = os.environ.get("GITPULSE_MACHINE") or socket.gethostname()
     print(f"[*] GitPulse watcher on {host} -> {agent.server_url} (session {session or 'local'})")
     write_server_file(session, agent.server_url)
-    tracker = HostTracker(agent.server_url, session, rendezvous)
+    tracker = HostTracker(agent.server_url, session, rendezvous, takeover)
     known: Dict[str, str] = {}
     decided: Dict[str, bool] = {}
     addrs = own_addrs()
@@ -636,6 +642,8 @@ def main():
     parser.add_argument("--no-hooks", action="store_true", help="Never add the receive hook")
     parser.add_argument("--no-rendezvous", action="store_true",
                         help="On a host transfer over the internet, don't use ntfy.sh to share the new host's link")
+    parser.add_argument("--no-takeover", action="store_true",
+                        help="If the host goes away, follow its new link but never host the session from this machine")
     parser.add_argument("--machine", default=os.environ.get("GITPULSE_MACHINE", ""), help="Override machine name (for simulation)")
     parser.add_argument("--interactive", "-i", action="store_true", help="Launch interactive CLI REPL")
 
@@ -658,7 +666,7 @@ def main():
 
     if args.watch:
         auto_watch_daemon(agent, args.session, "yes" if args.install_hooks else "no" if args.no_hooks else "ask",
-                          rendezvous=not args.no_rendezvous)
+                          rendezvous=not args.no_rendezvous, takeover=not args.no_takeover)
     elif args.gossip:
         agent.register(engine=engine, machine=mach, branch=branch)
         res = agent.send_idea(intent=args.gossip, gossip_message=args.gossip)

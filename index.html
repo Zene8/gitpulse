@@ -6,8 +6,25 @@
 <title>GitPulse</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js">
+const cBtn = $('coalesceBtn');
+if (cBtn) {
+  cBtn.onclick = async () => {
+    cBtn.disabled = true;
+    cBtn.textContent = 'Coalescing…';
+    try {
+      await fetch('/api/git/coalesce', { method: 'POST' });
+      cBtn.textContent = 'Coalesced!';
+      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
+    } catch (e) {
+      cBtn.textContent = 'Failed';
+      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
+    }
+  };
+}
+
+</script>
 <style>
 :root {
   --bg: #090a0d;
@@ -25,7 +42,12 @@
   --warn: #eab308;
   --bad: #ef4444;
   --code-bg: #0b0d12;
-  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --sans: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --code: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --r-sm: 8px;
+  --r: 12px;
+  --r-lg: 18px;
+  --r-full: 999px;
 }
 :root[data-theme="light"] {
   --bg: #f5f6f8;
@@ -43,90 +65,93 @@
   --machine: #b45309;
   --warn: #d97706;
 }
-* { box-sizing: border-box; border-radius: 4px; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 13.5px/1.5 Inter, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13.5px/1.5 var(--sans); }
 a { color: var(--contract); text-decoration: none; } a:hover { text-decoration: underline; }
-code, .mono { font-family: var(--mono); }
+code { font-family: var(--code); }
+.tnum { font-variant-numeric: tabular-nums; }
 button { font: inherit; cursor: pointer; }
 
 .top { display: flex; align-items: center; gap: 14px; padding: 12px 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; flex-wrap: wrap; }
 .logo { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; letter-spacing: -0.01em; }
-.logo i { width: 8px; height: 8px; background: var(--dim); display: inline-block; }
+.logo i { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); display: inline-block; }
 .where { color: var(--mute); font-size: 13px; } .where b { color: var(--fg); font-weight: 600; }
 .spacer { flex: 1; }
-.pill { border: 1px solid var(--line); padding: 4px 10px; font-size: 12px; color: var(--mute); display: inline-flex; align-items: center; gap: 8px; background: var(--panel); }
+.pill { border: 1px solid var(--line); border-radius: var(--r-full); padding: 4px 12px; font-size: 12px; color: var(--mute); display: inline-flex; align-items: center; gap: 8px; background: var(--panel); font-variant-numeric: tabular-nums; }
+.pill i { border-radius: 50%; }
 .pill b { color: var(--fg); font-weight: 600; }
 .pill .sep { width: 1px; height: 12px; background: var(--line); }
-.btn { background: var(--panel2); border: 1px solid var(--line2); color: var(--fg); padding: 6px 12px; font-size: 12.5px; font-weight: 500; }
+.btn { background: var(--panel2); border: 1px solid var(--line2); border-radius: var(--r-full); color: var(--fg); padding: 6px 14px; font-size: 12.5px; font-weight: 500; }
 .btn:hover { border-color: var(--mute); }
 .btn.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); font-weight: 600; }
 .btn.primary:hover { opacity: .9; }
-.btn.sm { padding: 3px 8px; font-size: 11px; }
+.btn.sm { padding: 3px 10px; font-size: 11px; }
 .btn:disabled { opacity: .5; cursor: default; }
 
 main { max-width: 1400px; margin: 0 auto; padding: 16px 24px 40px; }
 
 .repos { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-.repo { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; font-size: 12px; }
+.repo { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 6px 12px; font-size: 12px; }
 .repo .nm { font-weight: 600; } .repo .meta { color: var(--mute); font-size: 11.5px; }
 
 /* CENTRAL PIECE: Network UI */
-.net-panel { background: var(--panel); border: 1px solid var(--line); margin-bottom: 16px; }
-.ph { display: flex; align-items: center; gap: 10px; padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }
-.ph h2 { margin: 0; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); font-family: var(--mono); }
-.ph .hint { color: var(--dim); font-size: 11.5px; margin-left: auto; font-family: var(--mono); }
+.net-panel { margin-bottom: 16px; }
+.ph { display: flex; align-items: center; gap: 4px 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.ph h2 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--fg); }
+.ph .hint { color: var(--mute); font-size: 12px; margin-left: auto; }
 
-#net { width: 100%; height: auto; aspect-ratio: 960 / 460; max-height: 480px; display: block; background: var(--panel); }
+/* Height comes from the layout in renderNet; this only holds the space before first paint. */
+#net { width: 100%; height: 320px; display: block; background: var(--panel); }
 #net .flow { animation: gpflow 1.2s linear infinite; }
+#net .num { font-variant-numeric: tabular-nums; }
 @keyframes gpflow { to { stroke-dashoffset: -24; } }
-@media (prefers-reduced-motion: reduce) { #net .flow, #net animate { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #net .flow, #net animate, #net .agent-ring { animation: none; } }
 
-.legend { display: flex; gap: 16px; padding: 10px 16px; color: var(--mute); font-size: 11.5px; flex-wrap: wrap; border-top: 1px solid var(--line); background: var(--panel); align-items: center; }
+.legend { display: flex; gap: 6px 16px; padding: 10px 18px; color: var(--mute); font-size: 12px; flex-wrap: wrap; border-top: 1px solid var(--line); background: var(--panel); align-items: center; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
-.legend i { width: 8px; height: 8px; display: inline-block; }
-.legend i.sq { background: transparent; border: 1.5px dashed var(--line2); border-radius: 2px; }
-.legend i.sq-node { background: var(--panel2); border: 1px solid var(--line2); border-radius: 50%; }
-.legend-hint { margin-left: auto; color: var(--dim); font-size: 11px; font-family: var(--mono); }
+.legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.legend i.ring { background: transparent; border: 1.5px solid var(--mute); }
+.legend-hint { margin-left: auto; color: var(--mute); }
 
 /* Secondary grid below network */
-.grid { display: block; }
-.panel { background: var(--panel); border: 1px solid var(--line); }
+.grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
 
-/* machines & agent cards (less colors, sharp edges) */
+/* machines & agent cards */
 .machine-section { margin-bottom: 16px; }
 .machine-section:last-child { margin-bottom: 0; }
 .mhd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
-.mhd .mi { width: 22px; height: 22px; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line); color: var(--mute); }
-.mhd .mn { font-weight: 700; font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; font-family: var(--mono); }
-.mhd .ms { color: var(--dim); font-size: 11.5px; font-family: var(--mono); }
+.mhd .mi { width: 24px; height: 24px; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 50%; color: var(--mute); }
+.mhd .mn { font-weight: 600; font-size: 13.5px; }
+.mhd .ms { color: var(--mute); font-size: 12px; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
-.card { background: var(--panel); border: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: border-color .15s ease; cursor: pointer; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: border-color .15s ease; cursor: pointer; }
 .card:hover { border-color: var(--line2); }
 .card.selected { border-color: var(--fg); }
 .card.off { opacity: .45; }
 .card .hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .card .hd .nm { font-weight: 600; font-size: 13.5px; }
-.badge { font-size: 10px; font-weight: 600; font-family: var(--mono); padding: 2px 6px; background: var(--panel2); color: var(--mute); border: 1px solid var(--line); white-space: nowrap; text-transform: uppercase; letter-spacing: .04em; }
+.badge { font-size: 11px; font-weight: 500; padding: 1px 8px; background: var(--panel2); color: var(--mute); border: 1px solid var(--line); border-radius: var(--r-full); white-space: nowrap; }
 .badge.busy { color: var(--fg); border-color: var(--dim); }
 .badge.idle { color: var(--mute); }
 .badge.lead { color: var(--fg); border-color: var(--mute); }
 
-.kv { color: var(--mute); font-size: 11.5px; display: flex; gap: 10px; flex-wrap: wrap; font-family: var(--mono); }
+.kv { color: var(--mute); font-size: 12px; display: flex; gap: 10px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
 .kv b { color: var(--fg); font-weight: 600; }
 .prompt { font-size: 12px; color: var(--mute); border-left: 2px solid var(--line2); padding-left: 8px; font-style: italic; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
-.sub { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 3px; font-family: var(--mono); }
+.sub { font-size: 12px; font-weight: 500; color: var(--mute); margin-bottom: 3px; }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; }
-.chip { font: 11px var(--mono); background: var(--panel2); border: 1px solid var(--line); padding: 1px 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.chip { font-size: 11.5px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-full); padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
 
-.rx { display: flex; align-items: center; gap: 8px; font-size: 11.5px; padding: 6px 8px; background: var(--panel2); border: 1px solid var(--line); color: var(--mute); }
-.rx i { width: 6px; height: 6px; flex: none; display: inline-block; }
+.rx { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 6px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--mute); }
+.rx i { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
 .rx span { flex: 1; min-width: 0; }
 
-.inbox { background: var(--code-bg); border: 1px solid var(--line); padding: 6px 8px; font: 11.5px/1.4 var(--mono); overflow-x: auto; }
+.inbox { background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 8px; font: 11.5px/1.4 var(--code); overflow-x: auto; }
 .inbox > div + div { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 .inbox .from { color: var(--dim); font-size: 10.5px; }
-.empty { color: var(--dim); font-size: 11.5px; font-style: italic; }
+.empty { color: var(--mute); font-size: 12px; font-style: italic; }
 .add { color: var(--private); } .del { color: var(--bad); }
 .ok { color: var(--private); } .wait { color: var(--warn); } .no { color: var(--dim); }
 
@@ -134,63 +159,83 @@ main { max-width: 1400px; margin: 0 auto; padding: 16px 24px 40px; }
 .feed { padding: 4px 8px 8px; max-height: 800px; overflow-y: auto; }
 .item { padding: 10px; display: grid; grid-template-columns: 24px 1fr; gap: 10px; border-bottom: 1px solid var(--line); }
 .item:last-child { border-bottom: 0; }
-.item:hover { background: var(--panel2); }
+.item:hover { background: var(--panel2); border-radius: var(--r-sm); }
 .item.new { animation: flash 1.4s ease-out; }
 @keyframes flash { from { background: color-mix(in srgb, var(--k) 15%, transparent); } }
-.ico { width: 24px; height: 24px; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line); color: var(--fg); font-weight: 700; font-size: 11.5px; font-family: var(--mono); }
+.ico { width: 24px; height: 24px; display: grid; place-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 50%; color: var(--fg); font-weight: 600; font-size: 11.5px; }
 .item .s { font-weight: 600; font-size: 12.5px; }
 .item .d { color: var(--mute); font-size: 12px; margin-top: 2px; }
-.item .t { color: var(--dim); font-size: 10.5px; font-variant-numeric: tabular-nums; font-family: var(--mono); }
-.item pre { margin: 6px 0 0; background: var(--code-bg); border: 1px solid var(--line); padding: 6px 8px; font: 11.5px/1.4 var(--mono); overflow-x: auto; }
-.tag { display: inline-block; font-size: 10.5px; font-family: var(--mono); padding: 1px 6px; margin-right: 6px; border: 1px solid var(--line); background: var(--panel2); color: var(--mute); }
+.item .t { color: var(--mute); font-size: 11px; font-variant-numeric: tabular-nums; }
+.item pre { margin: 6px 0 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 8px; font: 11.5px/1.4 var(--code); overflow-x: auto; }
+.tag { display: inline-block; font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 7px; margin-right: 6px; border: 1px solid var(--line); border-radius: var(--r-full); background: var(--panel2); color: var(--mute); }
 .dl { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.dl span { font-size: 11px; font-family: var(--mono); border: 1px solid var(--line); padding: 1px 6px; background: var(--panel2); }
+.dl span { font-size: 11.5px; border: 1px solid var(--line); border-radius: var(--r-full); padding: 0 8px; background: var(--panel2); }
 .feed .none { padding: 30px 16px; color: var(--mute); text-align: center; font-size: 12.5px; }
 .feed .none b { color: var(--fg); }
-.else { padding: 10px 14px; color: var(--dim); font-size: 11.5px; border-top: 1px solid var(--line); }
+.else { padding: 10px 14px; color: var(--mute); font-size: 12px; border-top: 1px solid var(--line); }
+.else:empty { display: none; }
 
-.menu { position: relative; }
-.menu .dd { position: absolute; right: 0; top: 38px; background: var(--panel); border: 1px solid var(--line2); padding: 4px; min-width: 220px; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); z-index: 10; }
+.menu { position: relative; margin-left: auto; }
+.menu .dd { position: absolute; right: 0; top: 38px; background: var(--panel); border: 1px solid var(--line2); border-radius: var(--r); padding: 4px; min-width: 220px; display: none; box-shadow: 0 8px 24px rgba(0,0,0,.5); z-index: 10; }
 .menu.open .dd { display: block; }
-.dd button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--fg); padding: 7px 10px; font-size: 12.5px; }
+.dd button { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: var(--r-sm); color: var(--fg); padding: 7px 10px; font-size: 12.5px; }
 .dd button:hover { background: var(--panel2); }
 .dd .sep { height: 1px; background: var(--line); margin: 4px 0; }
-.dd .lbl { font-size: 10.5px; font-family: var(--mono); color: var(--dim); padding: 4px 10px; text-transform: uppercase; }
+.dd .lbl { font-size: 11.5px; color: var(--mute); padding: 4px 10px; }
 
-/* Modals with sharp edges */
+/* Modals */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none; align-items: center; justify-content: center; z-index: 20; padding: 16px; }
 .modal.open { display: flex; }
-.mbox { background: var(--panel); border: 1px solid var(--line2); padding: 22px; width: 520px; max-width: 100%; max-height: 92vh; overflow-y: auto; }
+.mbox { background: var(--panel); border: 1px solid var(--line2); border-radius: var(--r-lg); padding: 22px; width: 520px; max-width: 100%; max-height: 92vh; overflow-y: auto; }
 .mbox .x { float: right; background: none; border: 0; color: var(--mute); font-size: 18px; line-height: 1; padding: 2px 6px; }
 .mbox .x:hover { color: var(--fg); }
 .mbox h3 { margin: 0 0 6px; font-size: 16px; font-weight: 700; }
 .mbox > p { color: var(--mute); margin: 0 0 16px; font-size: 13px; }
-.seg { display: flex; background: var(--panel2); border: 1px solid var(--line); padding: 2px; margin-bottom: 14px; }
-.seg button { flex: 1; background: none; border: 0; color: var(--mute); padding: 5px 8px; font-size: 12.5px; }
+.seg { display: flex; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-full); padding: 2px; margin-bottom: 14px; }
+.seg button { flex: 1; background: none; border: 0; border-radius: var(--r-full); color: var(--mute); padding: 5px 8px; font-size: 12.5px; }
 .seg button.on { background: var(--panel); color: var(--fg); }
-.warnbox { border: 1px solid var(--line2); background: var(--panel2); padding: 8px 12px; font-size: 12px; margin-bottom: 14px; color: var(--mute); }
-.linkrow { display: flex; gap: 8px; }
-.linkrow code { flex: 1; min-width: 0; background: var(--code-bg); border: 1px solid var(--line); padding: 8px 10px; font-size: 12px; overflow-x: auto; white-space: nowrap; }
+.warnbox { border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--panel2); padding: 8px 12px; font-size: 12px; margin-bottom: 14px; color: var(--mute); }
+.linkrow { display: flex; gap: 8px; align-items: center; }
+.linkrow code { flex: 1; min-width: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; font-size: 12px; overflow-x: auto; white-space: nowrap; }
+#joinUrl { font-family: var(--sans); }
 .share { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; margin-top: 14px; }
 .share .s2 { color: var(--mute); font-size: 12px; }
-#qr { background: #fff; padding: 6px; line-height: 0; }
-.tunnelbox { text-align: center; padding: 16px; border: 1px solid var(--line); color: var(--mute); font-size: 12.5px; }
+#qr { background: #fff; border-radius: var(--r-sm); padding: 6px; line-height: 0; }
+.tunnelbox { text-align: center; padding: 16px; border: 1px solid var(--line); border-radius: var(--r); color: var(--mute); font-size: 12.5px; }
 .tunnelbox .btn { margin-top: 10px; }
 details { margin-top: 14px; color: var(--mute); font-size: 12px; }
 details summary { cursor: pointer; color: var(--fg); }
 details .linkrow { margin-top: 8px; }
-.fine { color: var(--dim); font-size: 11.5px; margin-top: 12px; }
+.fine { color: var(--mute); font-size: 12px; margin-top: 12px; }
 
 /* SVG styles */
-.agent-node-group { cursor: pointer; }
-.agent-node-group:hover circle.agent-base { stroke: var(--fg) !important; }
-.machine-cluster { cursor: grab; }
-.machine-cluster:active { cursor: grabbing; }
-.machine-cluster { cursor: grab; }
-.machine-cluster:active { cursor: grabbing; }
+.agent-tile-group { cursor: pointer; outline: none; }
+.agent-tile-group:hover .agent-base, .agent-tile-group:focus-visible .agent-base { stroke: var(--fg) !important; }
+.agent-ring { fill: none; stroke: none; stroke-width: 2; }
+.agent-ring.st-send { stroke: var(--contract); animation: gpring 1.1s ease-in-out infinite; }
+.agent-ring.st-recv { stroke: var(--join); animation: gpring 1.1s ease-in-out infinite; }
+@keyframes gpring { 50% { opacity: .3; } }
+text.st-send { fill: var(--contract); font-weight: 600; }
+text.st-recv { fill: var(--join); font-weight: 600; }
+.now { color: var(--mute); font-size: 12px; white-space: nowrap; }
+.now.st-send { color: var(--contract); font-weight: 600; }
+.now.st-recv { color: var(--join); font-weight: 600; }
+.machine-pick { margin-left: auto; max-width: 62%; font: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg); background: var(--panel2); border: 1px solid var(--line2); border-radius: var(--r-full); padding: 5px 12px; cursor: pointer; text-overflow: ellipsis; }
+.machine-pick:hover, .machine-pick:focus-visible { border-color: var(--fg); outline: none; }
+.machine-pick option { background: var(--panel); color: var(--fg); }
+.cards.rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 6px; }
+.card.row { flex-direction: row; align-items: center; gap: 9px; padding: 6px 12px 6px 7px; border-radius: var(--r-full); }
+.card.row .av { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 1.5px solid; display: grid; place-items: center; font-size: 10px; font-weight: 600; background: var(--panel2); }
+.card.row .nm { font-weight: 600; font-size: 13px; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.row .io { color: var(--mute); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.card.row .rxdot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
 
 @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
-@media (max-width: 560px) { main, .top { padding-left: 14px; padding-right: 14px; } .share { grid-template-columns: 1fr; } }
+@media (max-width: 560px) {
+  main, .top { padding-left: 14px; padding-right: 14px; }
+  .share { grid-template-columns: 1fr; }
+  .ph .hint, .legend-hint { margin-left: 0; }
+}
 </style>
 </head>
 <body>
@@ -222,24 +267,31 @@ details .linkrow { margin-top: 8px; }
 <main>
   <div class="repos" id="repos"></div>
 
-  <!-- NETWORK UI: CENTRAL PIECE -->
+  <!-- NETWORK UI: CENTRAL PIECE (relay at the centre, machines as discs around it) -->
   <div class="panel net-panel">
     <div class="ph">
-      <h2>Mesh Network</h2>
+      <h2>Mesh network</h2>
       <span class="hint" id="netHint"></span>
     </div>
-    <svg id="net" viewBox="0 0 960 460" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mesh network of machines and coding agents"></svg>
+    <svg id="net" viewBox="-480 -160 960 320" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mesh network of machines and coding agents"></svg>
     <div class="legend">
-      <span><i class="sq"></i>device / computer</span>
-      <span><i class="sq-node"></i>agent node</span>
-      <span><i style="background:var(--contract)"></i>contract packet (sig change)</span>
-      <span><i style="background:var(--private)"></i>private edit (0 B)</span>
-      <span><i style="background:var(--join)"></i>hook delivery</span>
-      <span class="legend-hint">Click any agent for sent/received breakdown</span>
+      <span><i class="ring"></i>Machine</span>
+      <span><i class="ring" style="border-radius:50%"></i>Agent</span>
+      <span><i class="ring" style="border-color:var(--contract)"></i>Sending</span>
+      <span><i class="ring" style="border-color:var(--join)"></i>Receiving</span>
+      <span><i style="background:var(--contract)"></i>Contract packet (signature change)</span>
+      <span><i style="background:var(--private)"></i>Private edit (0 B)</span>
+      <span><i style="background:var(--join)"></i>Hook delivery</span>
+      <span class="legend-hint">Click any agent for details</span>
     </div>
   </div>
 
   <div class="grid">
+    <div class="panel">
+      <div class="ph"><h2>Agents by machine</h2><select id="machinePick" class="machine-pick" aria-label="Choose a machine"></select></div>
+      <div id="machines" style="padding:14px;"></div>
+      <div class="else" id="elsewhere"></div>
+    </div>
     <div class="panel">
       <div class="ph"><h2>What got passed</h2><span class="hint">newest first</span></div>
       <div class="feed" id="feed"></div>
@@ -276,7 +328,7 @@ const ago = (t) => { if (!t) return ''; const s = Date.now() / 1000 - t; return 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const GH = '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.470 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.130-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.590.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
-const PC = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12"/><path d="M8 20h8M12 16v4"/></svg>';
+const PC = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8 20h8M12 16v4"/></svg>';
 
 try { const t = localStorage.getItem('gp-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 
@@ -284,7 +336,6 @@ let S = null;
 let selectedAgentId = null;
 const seenFlows = new Set();
 let firstRender = true;
-let pos = {};
 const isHostView = () => ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || (S && location.hostname === S.lan.ip);
 
 function render(st) {
@@ -312,11 +363,10 @@ function render(st) {
   if ($('agentModal').classList.contains('open') && selectedAgentId) openAgentModal(selectedAgentId);
 
   const els = st.other_agents || [];
-  if ($('elsewhere')) {
-    $('elsewhere').textContent = els.length
-      ? `Also running on ${st.host_machine}, in other folders (not tracked): ` + els.map((a) => `${a.engine} in ${a.cwd.split(/[\\/]/).pop()}`).join(', ')
-      : '';
-  }
+  $('elsewhere').textContent = els.length
+    ? `Also running on ${st.host_machine}, in other folders (not tracked): ` + els.map((a) => `${a.engine} in ${a.cwd.split(/[\\/]/).pop()}`).join(', ')
+    : '';
+  Object.keys(activity).forEach(paintActivity);
   firstRender = false;
 }
 
@@ -324,7 +374,7 @@ function renderRepos(repos) {
   $('repos').innerHTML = repos.map((r) => `
     <div class="repo">${r.web_url ? GH : ''}
       <div><div class="nm">${r.web_url ? `<a href="${esc(r.web_url)}" target="_blank" rel="noopener">${esc(r.web_url.replace(/^https?:\/\/(www\.)?/, ''))}</a>` : esc(r.name)}</div>
-      <div class="meta">branch <span class="mono">${esc(r.branch)}</span>${r.dirty ? ` · ${r.dirty} uncommitted` : ' · clean'}</div></div>
+      <div class="meta">branch <span>${esc(r.branch)}</span>${r.dirty ? ` · ${r.dirty} uncommitted` : ' · clean'}</div></div>
     </div>`).join('');
 }
 
@@ -342,79 +392,139 @@ function groups(nodes, st) {
   return keys.map((k) => ({ name: k, info: (st.machines || []).find((m) => m.name === k) || { name: k, is_host: k === st.host_machine }, nodes: by[k] }));
 }
 
-let netKey = '';
-let machineOffsets = {}; // name -> { dx: number, dy: number }
-let isDragging = false;
-let dragTarget = null;
-let dragStartMouse = [0, 0];
-let dragStartOffset = [0, 0];
-
-function initNetDrag() {
-  const svg = $('net');
-  if (!svg || svg._dragInit) return;
-  svg._dragInit = true;
-
-  const getPt = (e) => {
-    const CTM = svg.getScreenCTM();
-    if (!CTM) return [e.clientX, e.clientY];
-    return [
-      (e.clientX - CTM.e) / CTM.a,
-      (e.clientY - CTM.f) / CTM.d
-    ];
-  };
-
-  svg.addEventListener('mousedown', (e) => {
-    const group = e.target.closest('.machine-cluster');
-    if (!group) return;
-    const name = group.dataset.machine;
-    if (!name) return;
-    isDragging = true;
-    dragTarget = name;
-    dragStartMouse = getPt(e);
-    const cur = machineOffsets[name] || { dx: 0, dy: 0 };
-    dragStartOffset = [cur.dx, cur.dy];
-    e.preventDefault();
-  });
-
-  window.addEventListener('mousemove', (e) => {
-    if (!isDragging || !dragTarget) return;
-    const pt = getPt(e);
-    const ndx = dragStartOffset[0] + (pt[0] - dragStartMouse[0]);
-    const ndy = dragStartOffset[1] + (pt[1] - dragStartMouse[1]);
-    machineOffsets[dragTarget] = { dx: ndx, dy: ndy };
-    netKey = '';
-    if (S) renderNet(Object.values(S.nodes || {}), S);
-  });
-
-  window.addEventListener('mouseup', () => {
-    if (isDragging) {
-      isDragging = false;
-      dragTarget = null;
-    }
-  });
+/* Mesh layout. Everything is measured in CSS px around the relay at (0, 0); the
+   viewBox is then fitted to the content, so nothing clips and text never scales up. */
+const NET = { hubR: 44, ghostW: 112, ghostH: 62, chipW: 152, chipH: 30, nodeR: 20, labelH: 30, nodeGap: 46, tightNodeGap: 14, maxNamedPerRow: 3, rowGap: 20, cardPad: 12, cardR: 18, linkGap: 44, tightGap: 24, discGap: 20, pad: 16, minScale: .8 };
+const FONT = 'Inter, system-ui, sans-serif';
+const measure = document.createElement('canvas').getContext('2d');
+const textW = (s, px, weight) => { measure.font = `${weight} ${px}px ${FONT}`; return measure.measureText(String(s)).width; };
+function fit(s, px, weight, maxW) {
+  s = String(s ?? '');
+  if (textW(s, px, weight) <= maxW) return s;
+  let lo = 0, hi = s.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (textW(s.slice(0, mid) + '…', px, weight) <= maxW) lo = mid; else hi = mid - 1;
+  }
+  return s.slice(0, lo).trimEnd() + '…';
+}
+const r1 = (n) => Math.round(n * 10) / 10;
+const pathOf = (pts) => 'M' + pts.map((p) => `${r1(p[0])} ${r1(p[1])}`).join('L');
+function bend(a, c, b, steps = 10) {
+  const out = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps, u = 1 - t;
+    out.push([u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1]]);
+  }
+  return out;
 }
 
+// A machine is a rounded card: a small name chip with its agents' circles around it.
+// Up to 3 agents sit in one row under the chip; more split into a row above and a row below.
+// When names would collide, the whole machine drops them and its circles pack closer.
+function discFor(nodes) {
+  const { nodeR, nodeGap, tightNodeGap, maxNamedPerRow, labelH, chipW, chipH, rowGap, cardPad } = NET;
+  const n = nodes.length;
+  const twoRows = n > 3;
+  const top = twoRows ? Math.ceil(n / 2) : 0;
+  const rows = twoRows ? [nodes.slice(0, top), nodes.slice(top)] : [nodes];
+  const roomy = 2 * nodeR + nodeGap;
+  const nameW = (x) => textW(x.label, 10.5, 600);
+  const named = rows.every((r) => r.length <= maxNamedPerRow
+    && r.every((x, i) => !i || (nameW(r[i - 1]) + nameW(x)) / 2 <= roomy - 6));
+  const cell = named ? roomy : 2 * nodeR + tightNodeGap;
+  const hw = Math.max(Math.max(...rows.map((r) => r.length), 1) * cell, chipW) / 2 + cardPad;
+  const row = 2 * nodeR + (named ? labelH : 0) + rowGap;
+  const hh = (chipH + rows.length * row + 2 * cardPad) / 2;
+  const chipY = twoRows ? 0 : -hh + cardPad + chipH / 2;
+  return cardShape(hw, hh, { n, twoRows, chipY, cell, named, top });
+}
+const cardShape = (hw, hh, extra) => ({ ...extra, hw, hh, rx: NET.cardR });
+
+function bounds(discs, pad) {
+  const { hubR } = NET;
+  const x0 = Math.min(-hubR, ...discs.map((d) => d.x - d.hw)) - pad, x1 = Math.max(hubR, ...discs.map((d) => d.x + d.hw)) + pad;
+  const y0 = Math.min(-hubR, ...discs.map((d) => d.y - d.hh)) - pad, y1 = Math.max(hubR, ...discs.map((d) => d.y + d.hh)) + pad;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+// Discs on an ellipse around the relay, at the smallest size where nothing touches.
+function orbit(discs, aspect, linkGap) {
+  const { hubR, discGap } = NET;
+  const M = discs.length;
+  const start = -90 - (M % 2 ? 0 : 180 / M);
+  for (let R = hubR + linkGap; ; R += 6) {
+    const at = discs.map((d, i) => {
+      const a = (start + i * 360 / M) * Math.PI / 180;
+      return { ...d, x: aspect * R * Math.cos(a), y: R * Math.sin(a) };
+    });
+    const toHub = (a) => Math.hypot(Math.max(0, Math.abs(a.x) - a.hw), Math.max(0, Math.abs(a.y) - a.hh));
+    const apart = (a, b) => Math.abs(a.x - b.x) >= a.hw + b.hw + discGap || Math.abs(a.y - b.y) >= a.hh + b.hh + discGap;
+    const clear = at.every((a, i) => toHub(a) >= hubR + linkGap && at.slice(i + 1).every((b) => apart(a, b)));
+    if (clear) return at;
+  }
+}
+
+function placeRadial(discs, avail, linkGap) {
+  let at, box;
+  for (const aspect of [1.6, 1.4, 1.2, 1]) {
+    at = orbit(discs, aspect, linkGap);
+    box = bounds(at, NET.pad);
+    if (box.w <= avail) break;
+  }
+  const links = at.map((d) => {
+    const len = Math.hypot(d.x, d.y), ux = d.x / len, uy = d.y / len;
+    const toEdge = Math.min(d.hw / Math.abs(ux || 1e-9), d.hh / Math.abs(uy || 1e-9));
+    return [[ux * NET.hubR, uy * NET.hubR], [d.x - ux * toEdge, d.y - uy * toEdge]];
+  });
+  return { discs: at, links, box };
+}
+
+// Narrow screens: one column under the relay. Later discs are reached by rails down the sides.
+function placeStack(discs, avail) {
+  const { hubR, linkGap, discGap } = NET;
+  const rail = Math.max(0, ...discs.map((d) => d.hw)) + 10;
+  let y = hubR + linkGap - discGap;
+  const at = discs.map((d) => { y += discGap + d.hh; const p = { ...d, x: 0, y }; y += d.hh; return p; });
+  const links = at.map((d, i) => {
+    if (!i) return [[0, hubR], [0, d.y - d.hh]];
+    const s = i % 2 ? -1 : 1, x = s * rail;
+    return [...bend([s * hubR, 0], [x, 0], [x, 40]), ...bend([x, d.y - 30], [x, d.y], [s * d.hw, d.y])];
+  });
+  const box = bounds(at, 16);
+  if (at.length > 1) { box.x = -rail - 4; box.w = 2 * (rail + 4); }
+  return { discs: at, links, box };
+}
+
+function planMesh(discs, avail) {
+  let plan = placeRadial(discs, avail, NET.linkGap);
+  if (avail < plan.box.w) plan = placeRadial(discs, avail, NET.tightGap);
+  if (avail / plan.box.w < NET.minScale) plan = placeStack(discs, avail);
+  return { ...plan, scale: Math.min(1, avail / plan.box.w) };
+}
+
+let netKey = '';
+let routes = {};  // agent_id -> points from its node, through the machine chip, to the relay rim
 function renderNet(nodes, st) {
-  initNetDrag();
   const succ = st.succession || [];
   const flows = st.flows || [];
+  const svg = $('net');
+  const avail = svg.parentElement.clientWidth || 960;
+  const code = (st.session || {}).code || '';
   const key = JSON.stringify([
+    avail,
     document.documentElement.dataset.theme,
     st.cluster.leader_id,
     st.host_machine,
+    st.takeover_from,
+    code,
     selectedAgentId,
     succ,
     flows.length,
-    machineOffsets,
-    nodes.map((n) => [n.agent_id, n.online, n.label, n.machine, n.delivery, (n.inbox || []).length, (n.meta || {}).status])
+    nodes.map((n) => [n.agent_id, n.online, n.label, n.machine, n.delivery, !!n.hook_last_pull, (n.inbox || []).length, (n.meta || {}).status])
   ]);
   if (key === netKey) return;
   netKey = key;
-
-  const svg = $('net');
-  const W = 960, H = 460;
-  const hub = [480, 230];
-  pos = { hub };
 
   const fg = css('--fg'), dim = css('--dim'), mute = css('--mute'),
         line = css('--line'), line2 = css('--line2'), panel = css('--panel'),
@@ -422,310 +532,192 @@ function renderNet(nodes, st) {
         join = css('--join'), warn = css('--warn');
 
   const G = groups(nodes, st);
-  const M = G.length;
+  const { hubR, nodeR, chipW, chipH, rowGap } = NET;
+  const shapes = G.map((g) => discFor(g.nodes));
+  if (G.length === 1) shapes.push(cardShape(NET.ghostW, NET.ghostH));  // room for the "Connect Peer Machine" placeholder
+  const plan = planMesh(shapes, avail);
 
-  let links = '', clusters = '', agents = '';
+  routes = {};
+  let links = '', clusters = '', spokes = '', agents = '';
 
-  const rw = 84, rh = 70;
-  const rxRelay = hub[0] - rw / 2, ryRelay = hub[1] - rh / 2;
+  plan.discs.forEach((d, gi) => {
+    const link = plan.links[gi], g = G[gi];
 
-  // Render Machine containers (WIDE HORIZONTAL RECTANGLES) and Agent circle bubbles inside (HORIZONTAL LIST)
-  if (M <= 2) {
-    G.forEach((g, gi) => {
-      const isLeft = gi === 0;
-      const count = g.nodes.length;
-      const mOff = machineOffsets[g.name] || { dx: 0, dy: 0 };
-      
-      // Wide horizontal machine box with more breathing room from relay
-      const bw = 350;
-      const bh = 140;
-      const bx = (isLeft ? 40 : 570) + mOff.dx;
-      const by = (hub[1] - bh / 2) + mOff.dy;
-      const host = g.info.is_host;
-      const on = g.nodes.filter((x) => x.online).length;
-      const live = on > 0;
-
-      pos['m:' + g.name] = [bx + bw / 2, by + bh / 2];
-
-      // Flexible curvy connection line from Machine to Relay
-      const mx = isLeft ? (bx + bw) : bx;
-      const my = by + bh / 2;
-      const targetRelayX = isLeft ? rxRelay : (rxRelay + rw);
-      const targetRelayY = hub[1];
-      const cpx1 = mx + (isLeft ? 60 : -60);
-      const cpy1 = my;
-      const cpx2 = targetRelayX + (isLeft ? -40 : 40);
-      const cpy2 = targetRelayY;
-
-      links += `<path d="M ${mx} ${my} C ${cpx1} ${cpy1}, ${cpx2} ${cpy2}, ${targetRelayX} ${targetRelayY}" fill="none" stroke="${line}" stroke-width="${live ? 2 : 1}" />`;
-      if (live) links += `<path class="flow" d="M ${mx} ${my} C ${cpx1} ${cpy1}, ${cpx2} ${cpy2}, ${targetRelayX} ${targetRelayY}" fill="none" stroke="${con}" stroke-width="1.5" stroke-dasharray="3 8" opacity=".7" />`;
-
-      // Wide dotted machine box with 4px rounded corners
-      clusters += `<g class="machine-cluster" data-machine="${esc(g.name)}" opacity="${live || g.name === 'demo' ? 1 : .45}">
-        <title>Drag to reposition ${esc(g.name)}</title>
-        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="4" ry="4" fill="${panel}" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
-        <rect x="${bx}" y="${by}" width="${bw}" height="28" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
-        <text x="${bx + 12}" y="${by + 19}" fill="${fg}" font-size="11" font-weight="700" font-family="Inter, system-ui, sans-serif" letter-spacing=".04em">${esc(g.name.toUpperCase())}</text>
-        <text x="${bx + bw - 12}" y="${by + 19}" text-anchor="end" fill="${host ? con : dim}" font-size="9" font-weight="700" font-family="var(--mono)">${host ? 'HOST' : 'PEER'} · ${on} ACTIVE</text>
+    if (!g) {
+      links += `<path d="${pathOf(link)}" fill="none" stroke="${line2}" stroke-width="1" stroke-dasharray="3 4" />`;
+      clusters += `<g>
+        <rect x="${r1(d.x - d.hw)}" y="${r1(d.y - d.hh)}" width="${2 * d.hw}" height="${2 * d.hh}" rx="${d.rx}" fill="none" stroke="${line2}" stroke-width="1" stroke-dasharray="4 5" />
+        <text x="${r1(d.x)}" y="${r1(d.y - 12)}" text-anchor="middle" fill="${fg}" font-size="13" font-weight="600">+ Connect Peer Machine</text>
+        <text x="${r1(d.x)}" y="${r1(d.y + 8)}" text-anchor="middle" fill="${mute}" font-size="11.5">Laptop or VM on LAN / Internet</text>
+        <text x="${r1(d.x)}" y="${r1(d.y + 26)}" text-anchor="middle" fill="${mute}" font-size="11.5">Click 'Invite' top right</text>
       </g>`;
-
-      // Horizontal list of Agent circle bubbles inside (centered evenly between header and bottom)
-      const maxCols = Math.max(3, Math.min(count, 5));
-      const slotW = count > 0 ? (bw - 24) / Math.min(count, maxCols) : bw - 24;
-      const r = 16; // compact agent bubble radius
-      const cyBase = by + 28 + (bh - 28) / 2 - 14; // balanced top & bottom clearance
-
-      // Intra-machine mesh line connecting agents on the same PC
-      if (count > 1) {
-        for (let i = 0; i < count - 1; i++) {
-          const x1 = bx + 12 + slotW * i + slotW / 2;
-          const x2 = bx + 12 + slotW * (i + 1) + slotW / 2;
-          links += `<line x1="${x1}" y1="${cyBase}" x2="${x2}" y2="${cyBase}" stroke="${line2}" stroke-width="1" stroke-dasharray="3 3" opacity=".7" />`;
-        }
-      }
-
-      g.nodes.forEach((x, i) => {
-        const col = i % maxCols;
-        const cx = bx + 12 + slotW * col + slotW / 2;
-        const cy = cyBase;
-        pos[x.agent_id] = [cx, cy];
-
-        const isSelected = selectedAgentId === x.agent_id;
-        const sent = flows.filter((f) => f.source === x.agent_id && f.kind === 'contract').length;
-        const recv = (x.inbox || []).length;
-        const rx = rxText(x);
-        const rxColor = x.delivery === 'hook' ? (x.hook_last_pull ? ok : warn) : x.delivery === 'no_hook' ? warn : dim;
-        const m = x.meta || {};
-
-        // Faint curvy connection line from each Agent bubble to Relay
-        const acx1 = cx + (isLeft ? 80 : -80);
-        const acy1 = cy;
-        const acx2 = targetRelayX + (isLeft ? -30 : 30);
-        const acy2 = targetRelayY + (i - (count - 1) / 2) * 10;
-        const sendLineId = `line-send-${x.agent_id}`;
-
-        links += `<path id="${sendLineId}" class="agent-relay-path" d="M ${cx} ${cy} C ${acx1} ${acy1}, ${acx2} ${acy2}, ${targetRelayX} ${targetRelayY}" fill="none" stroke="${dim}" stroke-width="1" stroke-dasharray="2 3" opacity=".35" />`;
-
-        agents += `<g class="agent-node-group" onclick="openAgentModal('${esc(x.agent_id)}')">
-          <title>${esc(x.label)} (${esc(x.engine)})\n↑ ${sent} contracts sent · ↓ ${recv} received\nClick to inspect sent/received activity</title>
-          
-          <!-- Outer highlight ring if selected -->
-          ${isSelected ? `<circle cx="${cx}" cy="${cy}" r="${r + 4}" fill="none" stroke="${fg}" stroke-width="1.5" stroke-dasharray="3 3" />` : ''}
-
-          <!-- Agent Circle Bubble -->
-          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="${r}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2 : 1.5}" />
-          
-          <!-- Initials inside Bubble -->
-          <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="${fg}" font-size="9" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
-          
-          <!-- Status indicator dot on top-right of circle -->
-          <circle cx="${cx + r * 0.7}" cy="${cy - r * 0.7}" r="3.5" fill="${x.online ? (x.color || ok) : dim}" stroke="${panel}" stroke-width="1.5" />
-          
-          <!-- Agent Label below bubble -->
-          <text x="${cx}" y="${cy + r + 13}" text-anchor="middle" fill="${fg}" font-size="9.5" font-weight="600">${esc(x.label)}</text>
-          
-          <!-- Sent/Recv badge below label -->
-          <g transform="translate(${cx - 22}, ${cy + r + 19})">
-            <rect x="0" y="0" width="44" height="13" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="0.8" />
-            <text x="4" y="9.5" fill="${sent ? con : dim}" font-size="7.5" font-weight="700" font-family="var(--mono)">↑${sent}</text>
-            <text x="23" y="9.5" fill="${recv ? join : dim}" font-size="7.5" font-weight="700" font-family="var(--mono)">↓${recv}</text>
-            <circle cx="39" cy="6.5" r="2" fill="${rxColor}" />
-          </g>
-        </g>`;
-      });
-    });
-
-    // If only 1 machine, show a clean peer invite placeholder on the right
-    if (M === 1) {
-      const pw = 350, ph = 140;
-      const px = 570, py = hub[1] - ph / 2;
-      links += `<path d="M ${rxRelay + rw} ${hub[1]} C ${rxRelay + rw + 50} ${hub[1]}, ${px - 50} ${hub[1]}, ${px} ${hub[1]}" fill="none" stroke="${line}" stroke-width="1" stroke-dasharray="3 3" opacity=".5" />`;
-      clusters += `<g opacity=".5">
-        <rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="4" ry="4" fill="transparent" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
-        <text x="${px + pw / 2}" y="${py + 60}" text-anchor="middle" fill="${mute}" font-size="12" font-weight="600">+ Connect Peer Machine</text>
-        <text x="${px + pw / 2}" y="${py + 78}" text-anchor="middle" fill="${dim}" font-size="10.5">Laptop or VM on LAN / Internet</text>
-        <text x="${px + pw / 2}" y="${py + 96}" text-anchor="middle" fill="${dim}" font-size="9.5" font-family="var(--mono)">Click 'Invite' top right</text>
-      </g>`;
+      return;
     }
-  } else {
-    // 3 or more machines: 2 columns grid around central relay with horizontal bubbles
-    G.forEach((g, gi) => {
-      const isLeft = gi % 2 === 0;
-      const row = Math.floor(gi / 2);
-      const mOff = machineOffsets[g.name] || { dx: 0, dy: 0 };
-      const bw = 350, bh = 140;
-      const bx = (isLeft ? 40 : 570) + mOff.dx;
-      const by = (26 + row * 165) + mOff.dy;
-      const host = g.info.is_host;
-      const on = g.nodes.filter((x) => x.online).length;
 
-      pos['m:' + g.name] = [bx + bw / 2, by + bh / 2];
+    const host = g.info.is_host;
+    const on = g.nodes.filter((x) => x.online).length;
+    const live = on > 0;
+    const shown = g.name === 'demo' ? 'Demo' : g.name;
+    const cy = d.y + d.chipY;
+    const status = ` · ${host ? 'Host' : 'Peer'} · ${on}`;
 
-      const mx = isLeft ? (bx + bw) : bx;
-      const my = by + bh / 2;
-      const targetRelayX = isLeft ? rxRelay : (rxRelay + rw);
-      const targetRelayY = hub[1];
-      const cpx1 = mx + (isLeft ? 50 : -50);
-      const cpy1 = my;
-      const cpx2 = targetRelayX + (isLeft ? -40 : 40);
-      const cpy2 = targetRelayY;
+    links += `<path d="${pathOf(link)}" fill="none" stroke="${line2}" stroke-width="${live ? 2 : 1}" />`;
+    if (live) links += `<path class="flow" d="${pathOf(link)}" fill="none" stroke="${con}" stroke-width="1.5" stroke-dasharray="3 8" stroke-linecap="round" opacity=".8" />`;
 
-      links += `<path d="M ${mx} ${my} C ${cpx1} ${cpy1}, ${cpx2} ${cpy2}, ${targetRelayX} ${targetRelayY}" fill="none" stroke="${line}" stroke-width="1.5" />`;
+    clusters += `<g opacity="${live || g.name === 'demo' ? 1 : .45}">
+      <title>${esc(shown)}</title>
+      <rect class="machine" x="${r1(d.x - d.hw)}" y="${r1(d.y - d.hh)}" width="${2 * d.hw}" height="${2 * d.hh}" rx="${d.rx}" fill="${panel2}" fill-opacity=".45" stroke="${line2}" stroke-width="1" />
+      <rect x="${r1(d.x - chipW / 2)}" y="${r1(cy - chipH / 2)}" width="${chipW}" height="${chipH}" rx="10" fill="${panel}" stroke="${host ? con : line2}" stroke-width="1.5" />
+      <text x="${r1(d.x)}" y="${r1(cy + 4)}" text-anchor="middle" font-size="11"><tspan fill="${fg}" font-weight="600">${esc(fit(shown, 11, 600, chipW - 14 - textW(status, 11, 500)))}</tspan><tspan class="num" fill="${host ? con : mute}" font-weight="500">${esc(status)}</tspan></text>
+    </g>`;
 
-      clusters += `<g class="machine-cluster" data-machine="${esc(g.name)}">
-        <title>Drag to reposition ${esc(g.name)}</title>
-        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="4" ry="4" fill="${panel}" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
-        <rect x="${bx}" y="${by}" width="${bw}" height="26" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
-        <text x="${bx + 10}" y="${by + 17}" fill="${fg}" font-size="11" font-weight="700">${esc(g.name.toUpperCase())}</text>
-        <text x="${bx + bw - 10}" y="${by + 17}" text-anchor="end" fill="${dim}" font-size="9" font-family="var(--mono)">${on} ONLINE</text>
+    const { cell, top } = d;
+    g.nodes.forEach((x, i) => {
+      const above = i < top;
+      const inRow = above ? top : g.nodes.length - top;
+      const col = above ? i : i - top;
+      const ax = r1(d.x + (col - (inRow - 1) / 2) * cell);
+      const ay = r1(cy + (above ? -1 : 1) * (chipH / 2 + rowGap + nodeR));
+      routes[x.agent_id] = [[ax, ay], [d.x, cy], ...link.slice().reverse()];
+
+      const sx = Math.max(d.x - chipW / 2 + 16, Math.min(d.x + chipW / 2 - 16, ax));
+      const sy = cy + (above ? -1 : 1) * chipH / 2;
+      const len = Math.hypot(ax - sx, ay - sy);
+      spokes += `<path d="${pathOf([[sx, sy], [ax - nodeR * (ax - sx) / len, ay - nodeR * (ay - sy) / len]])}" fill="none" stroke="${line2}" stroke-width="1" opacity="${x.online ? 1 : .45}" />`;
+
+      const isSelected = selectedAgentId === x.agent_id;
+      const sent = flows.filter((f) => f.source === x.agent_id && f.kind === 'contract').length;
+      const recv = (x.inbox || []).length;
+      const rx = rxText(x);
+      const rxColor = x.delivery === 'hook' ? (x.hook_last_pull ? ok : warn) : x.delivery === 'no_hook' ? warn : dim;
+      const nameY = above ? ay - nodeR - 19 : ay + nodeR + 13;  // labels sit on the side away from the chip
+      const idle = `↑${sent} ↓${recv}`;
+      const id = esc(x.agent_id);
+
+      agents += `<g class="agent-tile-group" role="button" tabindex="0" aria-label="${esc(x.label)} details" opacity="${x.online ? 1 : .45}" onclick="openAgentModal('${id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAgentModal('${id}')}">
+        <title>${esc(x.label)} (${esc(x.engine)})\n↑ ${sent} contracts sent · ↓ ${recv} received · ${esc(rx.short)}\nClick for details</title>
+        <circle class="agent-ring" data-ring="${id}" cx="${ax}" cy="${ay}" r="${nodeR + 4}" />
+        <circle id="agent-tile-${id}" class="agent-base" cx="${ax}" cy="${ay}" r="${nodeR}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : x.color || dim}" stroke-width="1.5" />
+        <text x="${ax}" y="${r1(ay + 4)}" text-anchor="middle" fill="${fg}" font-size="11" font-weight="600">${esc(initials(x))}</text>
+        <circle cx="${r1(ax + 14)}" cy="${r1(ay + 14)}" r="4.5" fill="${rxColor}" stroke="${panel}" stroke-width="1.5" />
+        ${d.named ? `<text x="${ax}" y="${r1(nameY)}" text-anchor="middle" fill="${fg}" font-size="10.5" font-weight="600">${esc(fit(x.label, 10.5, 600, cell + 16))}</text>
+        <text class="num" data-state="${id}" data-idle="${idle}" x="${ax}" y="${r1(nameY + 13)}" text-anchor="middle" fill="${mute}" font-size="10" font-weight="500">${idle}</text>` : ''}
       </g>`;
-
-      const maxCols = 4;
-      const count = g.nodes.length;
-      const slotW = count > 0 ? (bw - 24) / Math.min(count, maxCols) : bw - 24;
-      const r = 16;
-      const cyBase = by + 26 + (bh - 26) / 2 - 14;
-
-      if (count > 1) {
-        for (let i = 0; i < Math.min(count, 4) - 1; i++) {
-          const x1 = bx + 12 + slotW * i + slotW / 2;
-          const x2 = bx + 12 + slotW * (i + 1) + slotW / 2;
-          links += `<line x1="${x1}" y1="${cyBase}" x2="${x2}" y2="${cyBase}" stroke="${line2}" stroke-width="1" stroke-dasharray="3 3" opacity=".7" />`;
-        }
-      }
-
-      g.nodes.slice(0, 4).forEach((x, i) => {
-        const cx = bx + 12 + slotW * i + slotW / 2;
-        const cy = cyBase;
-        pos[x.agent_id] = [cx, cy];
-        const isSelected = selectedAgentId === x.agent_id;
-
-        const acx1 = cx + (isLeft ? 70 : -70);
-        const acy1 = cy;
-        const acx2 = targetRelayX + (isLeft ? -30 : 30);
-        const acy2 = targetRelayY;
-        const sendLineId = `line-send-${x.agent_id}`;
-        links += `<path id="${sendLineId}" class="agent-relay-path" d="M ${cx} ${cy} C ${acx1} ${acy1}, ${acx2} ${acy2}, ${targetRelayX} ${targetRelayY}" fill="none" stroke="${dim}" stroke-width="1" stroke-dasharray="2 3" opacity=".35" />`;
-
-        agents += `<g class="agent-node-group" onclick="openAgentModal('${esc(x.agent_id)}')">
-          ${isSelected ? `<circle cx="${cx}" cy="${cy}" r="${r + 4}" fill="none" stroke="${fg}" stroke-width="1.5" stroke-dasharray="3 3" />` : ''}
-          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="${r}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2 : 1.5}" />
-          <circle cx="${cx + r * 0.7}" cy="${cy - r * 0.7}" r="3" fill="${x.online ? (x.color || ok) : dim}" stroke="${panel}" stroke-width="1.5" />
-          <text x="${cx}" y="${cy + 3.5}" text-anchor="middle" fill="${fg}" font-size="9" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
-          <text x="${cx}" y="${cy + r + 13}" text-anchor="middle" fill="${fg}" font-size="9.5" font-weight="600">${esc(x.label)}</text>
-          <text x="${cx}" y="${cy + r + 24}" text-anchor="middle" fill="${dim}" font-size="8" font-family="var(--mono)">${esc(x.engine)}</text>
-        </g>`;
-      });
     });
-  }
+  });
 
-  // Central GitPulse Relay (smaller, more rounded, non-overlapping labels)
-  const code = (st.session || {}).code || '';
+  // Central GitPulse relay
+  const lift = st.takeover_from ? -7 : 0;
   let relayHtml = `<g>
-    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="${rh}" rx="14" ry="14" fill="${panel}" stroke="${con}" stroke-width="1.5" />
-    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="18" rx="14" ry="14" fill="${panel2}" stroke="${line}" stroke-width="1" />
-    <text x="${hub[0]}" y="${ryRelay + 12}" text-anchor="middle" fill="${con}" font-size="7" font-weight="700" letter-spacing=".08em" font-family="var(--mono)">GITPULSE</text>
-    <text x="${hub[0]}" y="${hub[1] + 6}" text-anchor="middle" fill="${fg}" font-size="11" font-weight="700" font-family="var(--mono)">${esc(code)}</text>
-    <text x="${hub[0]}" y="${hub[1] + 20}" text-anchor="middle" fill="${dim}" font-size="7" font-family="var(--mono)">AST HUB</text>
     <title>GitPulse AST Relay on ${esc(st.host_machine || '')}. Function bodies stay private (0 B); changed signatures pass here.</title>
+    <circle r="${hubR + 9}" fill="none" stroke="${line}" stroke-width="1" />
+    <circle r="${hubR}" fill="${panel}" stroke="${con}" stroke-width="1.5" />
+    <text y="${lift + 6}" text-anchor="middle" fill="${fg}" font-size="16" font-weight="600">${esc(fit(code, 16, 600, 72))}</text>
   </g>`;
 
   if (st.takeover_from) {
-    relayHtml += `<text x="${hub[0]}" y="${ryRelay + rh + 16}" text-anchor="middle" fill="${mute}" font-size="9.5" font-family="var(--mono)">took over from ${esc(st.takeover_from)}</text>`;
+    relayHtml += `<text y="${lift + 22}" text-anchor="middle" fill="${mute}" font-size="10">${esc(fit('took over from ' + st.takeover_from, 10, 400, 66))}<title>took over from ${esc(st.takeover_from)}</title></text>`;
   }
 
-  let h = links + clusters + agents + relayHtml + '<g id="packets"></g>';
+  let h = links + clusters + spokes + agents + relayHtml + '<g id="packets"></g>';
+  const box = plan.box;
   if (!nodes.length) {
-    h += `<text x="${W / 2}" y="${H - 24}" text-anchor="middle" fill="${dim}" font-size="11.5">No coding agents found yet. Open Claude Code or Antigravity in a repo.</text>`;
+    h += `<text y="${hubR + 34}" text-anchor="middle" fill="${mute}" font-size="12">
+      No coding agents found yet.<tspan x="0" dy="18">Open Claude Code or Antigravity in a repo.</tspan></text>`;
+    box.h += 56;
   }
+
+  const viewW = avail / plan.scale;
+  svg.setAttribute('viewBox', `${r1(box.x + box.w / 2 - viewW / 2)} ${r1(box.y)} ${r1(viewW)} ${r1(box.h)}`);
+  svg.style.height = `${Math.ceil(box.h * plan.scale)}px`;
+
+  const flying = $('packets');  // packets in flight survive a redraw
   svg.innerHTML = h;
-  $('netHint').textContent = nodes.length ? `coordinator: ${label(st, st.cluster.leader_id)}` + (succ.length ? ` · next host: ${succ[0]}` : '') : '';
+  if (flying) $('packets').replaceWith(flying);
+  $('netHint').textContent = nodes.length ? `Coordinator: ${label(st, st.cluster.leader_id)}` + (succ.length ? ` · next host: ${succ[0]}` : '') : '';
 }
 
-// Packet animations: circular particles and node pulse flashes
+// Packets travel the drawn route (agent, machine rim, link, relay) and tiles flash on arrival.
+const stillMotion = matchMedia('(prefers-reduced-motion: reduce)');
 function packet(from, to, color, delay = 0) {
-  const g = $('packets'); if (!g || !pos[from] || !pos[to]) return;
-  const p1 = pos[from], p2 = pos[to];
-  const r = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-  r.setAttribute('r', 4.5);
-  r.setAttribute('fill', color);
-  r.style.transform = `translate(${p1[0]}px, ${p1[1]}px)`;
-  g.appendChild(r);
-  r.animate([
-    { transform: `translate(${p1[0]}px, ${p1[1]}px)` },
-    { transform: `translate(${p2[0]}px, ${p2[1]}px)` }
-  ], { duration: 800, delay, easing: 'ease-in-out', fill: 'forwards' }).onfinish = () => r.remove();
+  const g = $('packets');
+  const route = from === 'hub' ? (routes[to] || []).slice().reverse() : routes[from];
+  if (!g || !route || route.length < 2 || stillMotion.matches) return;
+
+  let total = 0;
+  const dist = route.map((p, i) => (total += i ? Math.hypot(p[0] - route[i - 1][0], p[1] - route[i - 1][1]) : 0));
+  const frames = route.map((p, i) => ({ transform: `translate(${p[0]}px, ${p[1]}px)`, offset: total ? dist[i] / total : i / (route.length - 1) }));
+
+  const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  c.setAttribute('r', 4.5);
+  c.setAttribute('fill', color);
+  c.style.transform = frames[0].transform;
+  g.appendChild(c);
+  c.animate(frames, { duration: 800, delay, easing: 'ease-in-out', fill: 'forwards' }).onfinish = () => c.remove();
 }
 
 function pulseTile(id, color) {
-  const el = document.getElementById(`agent-node-${id}`) || document.getElementById(`agent-tile-${id}`);
+  const el = document.getElementById(`agent-tile-${id}`);
   if (el) {
     el.animate([
-      { stroke: color, strokeWidth: '3.5px' },
-      { stroke: 'var(--line2)', strokeWidth: '1.5px' }
+      { stroke: color, strokeWidth: '3px' },
+      { stroke: 'var(--line2)', strokeWidth: '1px' }
     ], { duration: 1000, easing: 'ease-out' });
   }
 }
 
-function highlightLine(lineId, color, duration = 1200) {
-  const el = document.getElementById(lineId);
-  if (el) {
-    el.animate([
-      { stroke: color, strokeWidth: '2.5px', opacity: 0.95 },
-      { stroke: 'var(--dim)', strokeWidth: '1px', opacity: 0.35 }
-    ], { duration, easing: 'ease-out' });
-  }
+// Sending / Receiving is shown for a few seconds after a real flow, then falls back to the idle text.
+const ACTIVE_MS = 4000;
+const activity = {};
+function setActivity(id, kind) {
+  activity[id] = { kind, until: Date.now() + ACTIVE_MS };
+  paintActivity(id);
+  setTimeout(() => paintActivity(id), ACTIVE_MS + 50);
 }
+function paintActivity(id) {
+  const a = activity[id];
+  const kind = a && a.until > Date.now() ? a.kind : '';
+  if (!kind) delete activity[id];
+  document.querySelectorAll(`[data-state="${id}"]`).forEach((el) => {
+    el.textContent = kind === 'send' ? '↑ Sending' : kind === 'recv' ? '↓ Receiving' : el.dataset.idle;
+    el.classList.toggle('st-send', kind === 'send');
+    el.classList.toggle('st-recv', kind === 'recv');
+  });
+  document.querySelectorAll(`[data-ring="${id}"]`).forEach((el) => {
+    el.classList.toggle('st-send', kind === 'send');
+    el.classList.toggle('st-recv', kind === 'recv');
+  });
+}
+const canReceive = (id) => {
+  const n = S && S.nodes && S.nodes[id];
+  return !n || n.source === 'demo' || !['no_hook', 'unsupported'].includes(n.delivery);
+};
 
 function animateFlow(f) {
-  const sendColor = css('--private');  // green for sending line
-  const recvColor = css('--contract'); // blue/cyan for receiving line
-
   if (f.kind === 'private') {
-    pulseTile(f.source, sendColor);
+    pulseTile(f.source, css('--private'));
   } else if (f.kind === 'contract') {
-    const targets = (f.targets && f.targets.length) ? f.targets : (S && Object.keys(S.nodes || {}).filter((k) => k !== f.source)) || [];
-    const srcNode = S && S.nodes && S.nodes[f.source];
-    
-    // Check if targets include agents on the same machine
-    const sameMachineTargets = targets.filter((tid) => {
-      const tNode = S && S.nodes && S.nodes[tid];
-      return srcNode && tNode && srcNode.machine && srcNode.machine === tNode.machine;
-    });
-    const crossMachineTargets = targets.filter((tid) => !sameMachineTargets.includes(tid));
-
-    // Light up sending agent's connection line to relay in green
-    highlightLine(`line-send-${f.source}`, sendColor, 1200);
-
-    // Direct peer-to-peer intra-machine packet animation on the same PC
-    sameMachineTargets.forEach((tid, i) => {
-      packet(f.source, tid, sendColor, i * 60);
-      setTimeout(() => pulseTile(tid, recvColor), 800 + i * 60);
-    });
-
-    // Animate packet along sending path to the relay (green)
-    packet(f.source, 'hub', sendColor);
-
-    // After reaching relay, route to receiving agents (blue line light-up & packet)
+    setActivity(f.source, 'send');
+    packet(f.source, 'hub', css('--contract'));
     setTimeout(() => {
-      crossMachineTargets.forEach((tid, i) => {
-        // Light up receiving agent's connection line in blue
-        highlightLine(`line-send-${tid}`, recvColor, 1200);
-        packet('hub', tid, recvColor, i * 80);
-        setTimeout(() => pulseTile(tid, recvColor), 800 + i * 80);
+      const targets = (f.targets && f.targets.length) ? f.targets : (S && Object.keys(S.nodes || {}).filter((k) => k !== f.source)) || [];
+      targets.forEach((tid, i) => {
+        packet('hub', tid, css('--contract'), i * 80);
+        setTimeout(() => {
+          pulseTile(tid, css('--contract'));
+          if (canReceive(tid)) setActivity(tid, 'recv');
+        }, 800 + i * 80);
       });
     }, 800);
   } else if (f.kind === 'deliver') {
-    highlightLine(`line-send-${f.source}`, css('--join'), 1200);
     packet('hub', f.source, css('--join'));
-    setTimeout(() => pulseTile(f.source, css('--join')), 800);
+    setTimeout(() => {
+      pulseTile(f.source, css('--join'));
+      setActivity(f.source, 'recv');
+    }, 800);
   } else if (f.kind === 'collision') {
     pulseTile(f.source, css('--bad'));
-    highlightLine(`line-send-${f.source}`, css('--bad'), 1500);
-    (f.targets || []).forEach((tid) => {
-      pulseTile(tid, css('--bad'));
-      highlightLine(`line-send-${tid}`, css('--bad'), 1500);
-    });
+    (f.targets || []).forEach((tid) => pulseTile(tid, css('--bad')));
   }
 }
 
@@ -740,57 +732,64 @@ function rxText(n) {
     : { dot: 'var(--warn)', short: 'hook pending', long: 'Hook installed. Restart Claude Code (or type /hooks) so it loads.' };
 }
 
+// One machine at a time, so the list stays short however many devices join.
+const ALL_MACHINES = '__all__';
+let machineView = '';
 function renderMachines(nodes, st) {
-  if (!$('machines')) return;
   const G = groups(nodes, st);
   const flows = st.flows || [];
-  $('machines').innerHTML = G.map((g) => {
-    const on = g.nodes.filter((n) => n.online).length;
-    const sub = g.info.is_host ? 'host machine'
-      : g.name === 'demo' ? 'demo'
-      : `joined ${ago(g.info.joined)}`;
+  const nameOf = (g) => g.name === 'demo' ? 'Demo' : g.name;
+  if (machineView !== ALL_MACHINES && !G.some((g) => g.name === machineView)) {
+    machineView = (G.find((g) => g.info.is_host) || G[0] || {}).name || '';
+  }
+  if (machineView === ALL_MACHINES && G.length < 2) machineView = (G[0] || {}).name || '';
+
+  const pick = $('machinePick');
+  const options = G.map((g) => `<option value="${esc(g.name)}">${esc(nameOf(g))}${g.info.is_host ? ' (host)' : ''} · ${plural(g.nodes.length, 'agent')}</option>`).join('')
+    + (G.length > 1 ? `<option value="${ALL_MACHINES}">All machines · ${plural(nodes.length, 'agent')}</option>` : '');
+  if (pick.dataset.options !== options) {  // leave it alone otherwise, or an open list would snap shut
+    pick.innerHTML = options;
+    pick.dataset.options = options;
+  }
+  pick.value = machineView;
+  pick.style.display = G.length ? '' : 'none';
+
+  const all = machineView === ALL_MACHINES;
+  $('machines').innerHTML = G.filter((g) => all || g.name === machineView).map((g) => {
     const cards = g.nodes.slice().sort((a, b) => (b.online - a.online) || String(a.label).localeCompare(b.label)).map((n) => card(n, st, flows)).join('');
+    const sub = g.info.is_host ? 'host machine' : g.name === 'demo' ? 'demo' : `joined ${ago(g.info.joined)}`;
     return `<div class="machine-section">
-      <div class="mhd"><div class="mi">${PC}</div><span class="mn">${esc(g.name === 'demo' ? 'Demo' : g.name)}</span>
-      <span class="ms">${sub} · ${plural(on, 'agent')}</span></div>
-      <div class="cards">${cards}</div>
+      ${all ? `<div class="mhd"><div class="mi">${PC}</div><span class="mn">${esc(nameOf(g))}</span><span class="ms">${sub}</span></div>` : ''}
+      <div class="cards rows">${cards}</div>
     </div>`;
   }).join('');
-  document.querySelectorAll('[data-hook]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); installHook(b); });
-  document.querySelectorAll('.card[data-agent]').forEach((c) => c.onclick = () => openAgentModal(c.dataset.agent));
+  document.querySelectorAll('.card[data-agent]').forEach((c) => {
+    c.onclick = () => openAgentModal(c.dataset.agent);
+    c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgentModal(c.dataset.agent); } };
+  });
 }
+$('machinePick').onchange = (e) => {
+  machineView = e.target.value;
+  if (S) {
+    renderMachines(Object.values(S.nodes || {}), S);
+    Object.keys(activity).forEach(paintActivity);
+  }
+};
 
+// One line per agent. Everything else lives in the dialog behind a click.
 function card(n, st, flows) {
   const m = n.meta || {};
-  const status = !n.online ? 'offline' : (m.status || 'running');
-  const files = (m.files || []).map((f) => `<span class="chip" title="${esc(f)}">${esc(f.split(/[\\/]/).slice(-2).join('/'))}</span>`).join('');
-  const sentCount = (flows || []).filter((f) => f.source === n.agent_id && f.kind === 'contract').length;
-  const recvCount = (n.inbox || []).length;
-  const isSelected = selectedAgentId === n.agent_id;
+  const status = !n.online ? 'Offline' : 'Idle';
+  const sent = (flows || []).filter((f) => f.source === n.agent_id && f.kind === 'contract').length;
+  const recv = (n.inbox || []).length;
   const rx = rxText(n);
-  const canConnect = rx.connect && ['Claude Code', 'Antigravity'].includes(n.engine) && n.source === 'local' && isHostView();
-  const rxRow = `<div class="rx"><i style="background:${rx.dot}"></i><span>${esc(rx.long)}</span>${canConnect ? `<button class="btn sm primary" data-hook="${esc(n.agent_id)}">Connect</button>` : ''}</div>`;
-
-  return `<div class="card ${n.online ? '' : 'off'} ${isSelected ? 'selected' : ''}" data-agent="${esc(n.agent_id)}">
-    <div class="hd">
-      <span class="nm">${esc(n.label)}</span>
-      <span class="badge ${status}">${esc(status)}</span>
-      ${m.kind === 'background' ? '<span class="badge">bg</span>' : ''}
-      ${n.is_leader ? '<span class="badge lead">coordinator</span>' : ''}
-    </div>
-    <div class="kv">
-      <span>Sent: <b>${sentCount}</b></span>
-      <span>Received: <b>${recvCount}</b></span>
-      ${m.pid ? `<span>pid <b>${m.pid}</b></span>` : ''}
-      ${m.last_active ? `<span>${ago(m.last_active)}</span>` : ''}
-    </div>
-    ${rxRow}
-    ${m.title ? `<div style="font-weight:600;font-size:12px;">${esc(m.title)}</div>` : ''}
-    ${m.last_prompt ? `<div class="prompt">“${esc(m.last_prompt)}”</div>` : ''}
-    <div><div class="sub">Files edited</div>${files ? `<div class="chips">${files}</div>` : '<div class="empty">none yet</div>'}</div>
-    <div style="margin-top:auto;display:flex;justify-content:flex-end;">
-      <button class="btn sm" onclick="openAgentModal('${esc(n.agent_id)}');event.stopPropagation();">Inspect Details →</button>
-    </div>
+  return `<div class="card row ${n.online ? '' : 'off'} ${selectedAgentId === n.agent_id ? 'selected' : ''}" data-agent="${esc(n.agent_id)}" role="button" tabindex="0" title="${esc(m.title || n.label)}">
+    <span class="av" style="border-color:${n.color || 'var(--dim)'}">${esc(initials(n))}</span>
+    <span class="nm">${esc(n.label)}</span>
+    ${n.is_leader ? '<span class="badge lead">coordinator</span>' : ''}
+    <span class="now" data-state="${esc(n.agent_id)}" data-idle="${status}">${status}</span>
+    <span class="io">↑${sent} ↓${recv}</span>
+    <i class="rxdot" style="background:${rx.dot}" title="${esc(rx.short)}"></i>
   </div>`;
 }
 
@@ -809,60 +808,63 @@ function openAgentModal(aid) {
   const files = (m.files || []).map((f) => `<span class="chip" title="${esc(f)}">${esc(f.split(/[\\/]/).slice(-2).join('/'))}</span>`).join('');
 
   const receivedHtml = inbox.length ? inbox.slice().reverse().map((x) => `
-    <div style="background:var(--code-bg);border:1px solid var(--line);padding:8px 10px;margin-bottom:8px;">
+    <div style="background:var(--code-bg);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;margin-bottom:8px;">
       <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:4px;">
-        <span>From: <b style="color:var(--fg);">${esc(label(S, x.from))}</b> · <span class="mono">${esc(x.file)}</span></span>
-        <span style="color:var(--dim);">${esc(x.time)} · ${x.delivered ? '<span class="ok">delivered</span>' : '<span class="wait">in queue</span>'}</span>
+        <span>From: <b style="color:var(--fg);">${esc(label(S, x.from))}</b> · <span>${esc(x.file)}</span></span>
+        <span class="tnum" style="color:var(--mute);">${esc(x.time)} · ${x.delivered ? '<span class="ok">delivered</span>' : '<span class="wait">in queue</span>'}</span>
       </div>
-      <pre style="margin:4px 0 0;padding:4px 6px;background:var(--panel);font:11.5px/1.4 var(--mono);">${(x.contract || []).map((l) => `<span class="${l[0] === '+' ? 'add' : 'del'}">${esc(l)}</span>`).join('\n')}</pre>
+      <pre style="margin:4px 0 0;padding:4px 6px;background:var(--panel);border-radius:6px;font:11.5px/1.4 var(--code);overflow-x:auto;">${(x.contract || []).map((l) => `<span class="${l[0] === '+' ? 'add' : 'del'}">${esc(l)}</span>`).join('\n')}</pre>
     </div>
   `).join('') : '<div class="empty">No signature updates received from peers yet.</div>';
 
   const sentHtml = sentContracts.length ? sentContracts.slice().reverse().slice(0, 5).map((f) => `
-    <div style="background:var(--code-bg);border:1px solid var(--line);padding:8px 10px;margin-bottom:8px;">
+    <div style="background:var(--code-bg);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;margin-bottom:8px;">
       <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:4px;">
         <span style="font-weight:600;color:var(--fg);">${esc(f.summary)}</span>
-        <span style="color:var(--dim);font-family:var(--mono);">${esc(f.time)}</span>
+        <span class="tnum" style="color:var(--mute);">${esc(f.time)}</span>
       </div>
-      <pre style="margin:4px 0 0;padding:4px 6px;background:var(--panel);font:11.5px/1.4 var(--mono);">${(f.contract || []).map((l) => `<span class="${l[0] === '+' ? 'add' : 'del'}">${esc(l)}</span>`).join('\n')}</pre>
+      <pre style="margin:4px 0 0;padding:4px 6px;background:var(--panel);border-radius:6px;font:11.5px/1.4 var(--code);overflow-x:auto;">${(f.contract || []).map((l) => `<span class="${l[0] === '+' ? 'add' : 'del'}">${esc(l)}</span>`).join('\n')}</pre>
       <div style="font-size:11px;color:var(--mute);margin-top:4px;">Broadcasted to ${f.targets ? f.targets.length : 0} peer(s) · ${fmtB(f.bytes_sent)} sent (saved ${fmtB(f.bytes_saved || 0)})</div>
     </div>
   `).join('') : '<div class="empty">No contract changes sent yet.</div>';
 
   $('agentModalBody').innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:10px;">
-      <div style="width:12px;height:12px;background:${n.color || 'var(--mute)'};flex:none;"></div>
+      <div style="width:12px;height:12px;border-radius:50%;background:${n.color || 'var(--mute)'};flex:none;"></div>
       <h3 style="margin:0;font-size:16px;font-weight:700;">${esc(n.label)}</h3>
       <span class="badge ${status}">${esc(status)}</span>
       ${n.is_leader ? '<span class="badge lead">coordinator</span>' : ''}
       ${m.kind === 'background' ? '<span class="badge">bg</span>' : ''}
+      <span class="now" data-state="${esc(aid)}" data-idle="${n.online ? 'Idle' : 'Offline'}" style="margin-left:auto;">${n.online ? 'Idle' : 'Offline'}</span>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;">
-      <div style="background:var(--panel2);border:1px solid var(--line);padding:8px;">
-        <div style="font-size:10px;color:var(--mute);text-transform:uppercase;font-family:var(--mono);">Sent (Sig)</div>
-        <div style="font-size:16px;font-weight:700;color:var(--contract);">${sentContracts.length}</div>
+    ${m.title ? `<div style="font-weight:600;font-size:13px;margin-bottom:12px;">${esc(m.title)}</div>` : ''}
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px;margin-bottom:14px;">
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;">
+        <div style="font-size:11.5px;color:var(--mute);">Sent (Sig)</div>
+        <div class="tnum" style="font-size:16px;font-weight:600;color:var(--contract);">${sentContracts.length}</div>
       </div>
-      <div style="background:var(--panel2);border:1px solid var(--line);padding:8px;">
-        <div style="font-size:10px;color:var(--mute);text-transform:uppercase;font-family:var(--mono);">Received</div>
-        <div style="font-size:16px;font-weight:700;color:var(--join);">${inbox.length}</div>
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;">
+        <div style="font-size:11.5px;color:var(--mute);">Received</div>
+        <div class="tnum" style="font-size:16px;font-weight:600;color:var(--join);">${inbox.length}</div>
       </div>
-      <div style="background:var(--panel2);border:1px solid var(--line);padding:8px;">
-        <div style="font-size:10px;color:var(--mute);text-transform:uppercase;font-family:var(--mono);">Private (0B)</div>
-        <div style="font-size:16px;font-weight:700;color:var(--private);">${privateEdits.length}</div>
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;">
+        <div style="font-size:11.5px;color:var(--mute);">Private (0B)</div>
+        <div class="tnum" style="font-size:16px;font-weight:600;color:var(--private);">${privateEdits.length}</div>
       </div>
-      <div style="background:var(--panel2);border:1px solid var(--line);padding:8px;">
-        <div style="font-size:10px;color:var(--mute);text-transform:uppercase;font-family:var(--mono);">PID</div>
-        <div style="font-size:16px;font-weight:700;font-family:var(--mono);">${m.pid || '—'}</div>
+      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;">
+        <div style="font-size:11.5px;color:var(--mute);">PID</div>
+        <div class="tnum" style="font-size:16px;font-weight:600;">${m.pid || '—'}</div>
       </div>
     </div>
 
-    <div style="font-size:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--panel2);border:1px solid var(--line);padding:8px 10px;margin-bottom:14px;">
-      <div><span style="color:var(--dim)">Engine:</span> <b>${esc(n.engine)}</b></div>
-      <div><span style="color:var(--dim)">Machine:</span> <b>${esc(n.machine || '')}</b></div>
-      <div><span style="color:var(--dim)">Active:</span> <b>${ago(m.last_active) || '—'}</b></div>
-      <div><span style="color:var(--dim)">Branch:</span> <span class="mono" style="font-size:11px;">${esc(n.branch || '—')}</span></div>
-      <div style="grid-column:1/-1;"><span style="color:var(--dim)">Path:</span> <span class="mono" style="font-size:11px;">${esc(m.cwd || '—')}</span></div>
+    <div style="font-size:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:8px 12px;margin-bottom:14px;">
+      <div><span style="color:var(--mute)">Engine:</span> <b>${esc(n.engine)}</b></div>
+      <div><span style="color:var(--mute)">Machine:</span> <b>${esc(n.machine || '')}</b></div>
+      <div><span style="color:var(--mute)">Active:</span> <b>${ago(m.last_active) || '—'}</b></div>
+      <div><span style="color:var(--mute)">Branch:</span> <span style="font-size:11.5px;">${esc(n.branch || '—')}</span></div>
+      <div style="grid-column:1/-1;"><span style="color:var(--mute)">Path:</span> <span style="font-size:11.5px;">${esc(m.cwd || '—')}</span></div>
     </div>
 
     <div class="rx" style="margin-bottom:14px;">
@@ -891,6 +893,7 @@ function openAgentModal(aid) {
   $('agentModalBody').querySelectorAll('[data-hook]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); installHook(b); });
   $('agentModal').classList.add('open');
   if (S) renderNet(Object.values(S.nodes || {}), S);
+  Object.keys(activity).forEach(paintActivity);
 }
 
 $('closeAgentModal').onclick = () => {
@@ -917,16 +920,14 @@ async function installHook(b) {
 }
 
 const KIND = {
-  private: { k: 'var(--private)', i: '■' },
+  private: { k: 'var(--private)', i: '●' },
   contract: { k: 'var(--contract)', i: '→' },
   deliver: { k: 'var(--join)', i: '✓' },
   collision: { k: 'var(--bad)', i: '⚠' },
-  sync: { k: 'var(--private)', i: '⟳' },
-  commit: { k: 'var(--contract)', i: '◆' },
   join: { k: 'var(--join)', i: '+' },
   leave: { k: 'var(--dim)', i: '–' },
-  machine: { k: 'var(--machine)', i: '▣' },
-  machine_left: { k: 'var(--dim)', i: '▢' },
+  machine: { k: 'var(--machine)', i: '◉' },
+  machine_left: { k: 'var(--dim)', i: '○' },
   info: { k: 'var(--mute)', i: 'i' },
 };
 const DL = { hook: ['wait', 'waiting for hook'], no_hook: ['no', 'not connected'], unsupported: ['no', 'can’t receive'] };
@@ -959,8 +960,6 @@ function renderFeed(flows, st) {
         extra = `<div class="d"><span class="tag" style="color:var(--bad);border-color:var(--bad);font-weight:700;">COLLISION PRE-EMPTED</span>${esc(f.detail)}</div>`;
       } else if (f.kind === 'commit') {
         extra = `<div class="d"><span class="tag" style="color:var(--contract);border-color:var(--contract);font-weight:700;">GIT COALESCE</span>${esc(f.detail)}</div>`;
-      } else if (f.kind === 'sync') {
-        extra = `<div class="d"><span class="tag" style="color:var(--private);font-weight:700;">SYNCED TO DISK</span>${esc(f.detail)}</div>`;
       } else if (f.detail) {
         extra = `<div class="d">${esc(f.detail)}</div>`;
       }
@@ -982,6 +981,8 @@ function connect() {
 fetch('/api/state').then((r) => r.json()).then(render).catch(() => {});
 connect();
 setInterval(() => { if (S) renderMachines(Object.values(S.nodes || {}), S); }, 30000);
+new ResizeObserver(() => { if (S) renderNet(Object.values(S.nodes || {}), S); }).observe($('net').parentElement);
+if (document.fonts) document.fonts.ready.then(() => { netKey = ''; if (S) renderNet(Object.values(S.nodes || {}), S); });
 
 function tickScan() {
   const el = $('scanAge'); if (!el || !S) return;
@@ -1054,21 +1055,6 @@ function pollTunnel() {
   });
 }
 $('shareBtn').onclick = () => { if (!S) return; mode = null; $('modal').classList.add('open'); renderInvite(); };
-const cBtn = $('coalesceBtn');
-if (cBtn) {
-  cBtn.onclick = async () => {
-    cBtn.disabled = true;
-    cBtn.textContent = 'Coalescing…';
-    try {
-      await fetch('/api/git/coalesce', { method: 'POST' });
-      cBtn.textContent = 'Coalesced!';
-      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
-    } catch (e) {
-      cBtn.textContent = 'Failed';
-      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
-    }
-  };
-}
 $('closeModal').onclick = () => $('modal').classList.remove('open');
 $('modal').onclick = (e) => { if (e.target === $('modal')) $('modal').classList.remove('open'); };
 
@@ -1086,6 +1072,23 @@ document.querySelectorAll('[data-act]').forEach((b) => b.onclick = () => {
   }
   fetch(ACT[a], { method: 'POST' });
 });
+
+const cBtn = $('coalesceBtn');
+if (cBtn) {
+  cBtn.onclick = async () => {
+    cBtn.disabled = true;
+    cBtn.textContent = 'Coalescing…';
+    try {
+      await fetch('/api/git/coalesce', { method: 'POST' });
+      cBtn.textContent = 'Coalesced!';
+      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
+    } catch (e) {
+      cBtn.textContent = 'Failed';
+      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
+    }
+  };
+}
+
 </script>
 </body>
 </html>
