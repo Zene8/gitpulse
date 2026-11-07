@@ -123,6 +123,7 @@ class GitPulseAgent:
             "gossip_message": gossip_message or intent,
             "code": code,
             "target_agent": target_agent,
+            "session": self.session,
         }
         return self._post("/api/agents/gossip", payload)
 
@@ -595,32 +596,62 @@ def auto_watch_daemon(agent: GitPulseAgent, session: str, hooks: str = "ask", re
                     else:
                         print(f"[^] {ch['rel']}: {kind} ({res.get('bytes_sent', 0)} B sent)")
 
-                # Check inbox for local agents to sync AST patches across machines
-                for a in agents:
-                    try:
-                        inbox_res = agent._post("/api/agents/inbox/pull", {
-                            "claude_session_id": a.get("session_id", ""),
-                            "engine": a["engine"],
-                            "session": session,
-                            "machine": host,
-                            "cwd": a["cwd"],
-                        })
-                        items = inbox_res.get("items") or []
+                # Pull queued AST disk patches for this machine (leaves LLM hook inbox untouched for gitpulse_hook.py)
+                try:
+                    patch_res = agent._post("/api/agents/patches/pull", {
+                        "session": session,
+                        "machine": host,
+                    })
+                    items = patch_res.get("items") or []
+                    if items:
+                        import gitpulse_hook
+                        cwd_roots = sorted({a["cwd"] for a in agents if a.get("cwd")} | set(roots))
                         for it in items:
                             if it.get("is_collision"):
-                                print(f"[!] COLLISION WARNING for {a['engine']}: {it.get('contract', [''])[0]}")
+                                print(f"[!] {it.get('warning', 'COLLISION WARNING')}")
                             for p in it.get("patches") or []:
                                 rel = p.get("path") or p.get("file")
-                                candidates = [Path(a["cwd"]) / rel, Path(a["cwd"]) / rel.split("/", 1)[-1] if "/" in rel else None]
-                                for target in candidates:
-                                    if target and target.is_file() and target.suffix == ".py":
-                                        old_txt = target.read_text(encoding="utf-8")
-                                        new_txt = gitpulse_hook.patch_source_simple(old_txt, p["symbol"], p["code"])
+                                repo = p.get("repo") or ""
+                                action = p.get("action", "upsert")
+                                imports = p.get("imports")
+                                created = p.get("created", False)
+                                if not rel:
+                                    continue
+                                patched_paths = set()
+                                for base in cwd_roots:
+                                    candidates = [
+                                        Path(base) / rel,
+                                        Path(base) / repo / rel if repo else None,
+                                        Path(base) / rel.split("/", 1)[-1] if "/" in rel else None,
+                                    ]
+                                    for target in candidates:
+                                        if not target or target.suffix != ".py":
+                                            continue
+                                        resolved = os.path.normcase(str(target.resolve()))
+                                        if resolved in patched_paths:
+                                            continue
+                                        if not target.is_file():
+                                            if not created or action == "delete":
+                                                continue
+                                            repo_base = Path(base) / repo if (repo and (Path(base) / repo).is_dir()) else (Path(base) if (Path(base) / ".git").exists() else None)
+                                            if not repo_base or not str(target.resolve()).startswith(str(repo_base.resolve())):
+                                                continue
+                                        patched_paths.add(resolved)
+                                        old_txt = target.read_text(encoding="utf-8") if target.is_file() else ""
+                                        new_txt = gitpulse_hook.patch_source_simple(
+                                            old_txt,
+                                            p["symbol"],
+                                            p.get("code", ""),
+                                            action=action,
+                                            imports=imports,
+                                        )
                                         if new_txt != old_txt:
+                                            target.parent.mkdir(parents=True, exist_ok=True)
                                             target.write_text(new_txt, encoding="utf-8")
-                                            print(f"[+] Synced AST patch '{p['symbol']}' into {target.name}")
-                    except Exception:
-                        pass
+                                            watcher.mark_synced(str(target), new_txt)
+                                            print(f"[+] Synced AST {action} '{p['symbol']}' into {target.name}")
+                except Exception:
+                    pass
             time.sleep(3.0)
         except KeyboardInterrupt:
             print("\nStopped.")
