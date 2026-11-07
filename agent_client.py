@@ -15,6 +15,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -360,7 +361,7 @@ def prefetch_bundle(server: str, session: str) -> bool:
     """Cache the server files now, while the host is still up, so this machine can take over later."""
     try:
         os.makedirs(HOST_DIR, exist_ok=True)
-        for name in ("mesh_engine.py", "index.html", "agent_detect.py", "gitpulse_hook.py"):
+        for name in ("mesh_engine.py", "index.html", "agent_detect.py", "gitpulse_hook.py", "agent_client.py"):
             with urllib.request.urlopen(f"{server}/bundle/{name}?s={session}", timeout=15) as r:
                 data = r.read()
             with open(os.path.join(HOST_DIR, name), "wb") as f:
@@ -595,7 +596,7 @@ def auto_watch_daemon(agent: GitPulseAgent, session: str, hooks: str = "ask", re
                             "claude_session_id": a.get("session_id", ""),
                             "engine": a["engine"],
                             "session": session,
-                            "machine": mach,
+                            "machine": host,
                             "cwd": a["cwd"],
                         })
                         items = inbox_res.get("items") or []
