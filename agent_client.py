@@ -72,7 +72,13 @@ class GitPulseAgent:
         except urllib.error.URLError as e:
             return {"status": "error", "error": str(e)}
 
-    def register(self, initial_code: Optional[str] = None) -> dict:
+    def register(
+        self,
+        initial_code: Optional[str] = None,
+        engine: str = "Custom",
+        machine: str = "",
+        branch: str = "main",
+    ) -> dict:
         code = initial_code or (
             f"# {self.role} ({self.agent_id})\n"
             f"def process_task(payload: dict) -> dict:\n"
@@ -84,6 +90,9 @@ class GitPulseAgent:
             "target_module": self.target_module,
             "initial_code": code,
             "deps": self.deps,
+            "engine": engine,
+            "machine": machine or socket.gethostname(),
+            "branch": branch,
         }
         res = self._post("/api/agents/register", payload)
         return res
@@ -178,29 +187,88 @@ def interactive_repl(agent: GitPulseAgent):
             print("Unknown command. Type 'idea <text>', 'tell <agent> <msg>', 'mutate <code>', 'state', or 'exit'.")
 
 
+def detect_local_agent_and_branch() -> tuple[str, str]:
+    """Detects active AI coding agent (Antigravity, Claude Code, Codex, Cursor) and Git branch on this machine."""
+    import pathlib, subprocess
+    home = pathlib.Path.home()
+    engine = "Local Agent"
+    if (home / ".gemini" / "antigravity-cli").exists():
+        engine = "Antigravity"
+    elif (home / ".claude").exists():
+        engine = "Claude Code"
+    elif (home / ".codex").exists():
+        engine = "Codex"
+    elif (home / ".cursor").exists():
+        engine = "Cursor"
+
+    branch = "main"
+    try:
+        out = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=1)
+        if out.returncode == 0 and out.stdout.strip():
+            branch = out.stdout.strip()
+    except Exception:
+        pass
+    return engine, branch
+
+
+def auto_watch_daemon(agent: GitPulseAgent, engine: str, branch: str):
+    """Watches local git branch and .py files, streaming live AST updates to the GitPulse Cloud."""
+    import pathlib
+    host = socket.gethostname()
+    print(f"[*] GitPulse Auto-Watcher active on {host} | Engine: {engine} | Branch: {branch} -> {agent.server_url}")
+    agent.register(engine=engine, machine=host, branch=branch)
+    mtimes: Dict[str, float] = {}
+    while True:
+        try:
+            for p in pathlib.Path(".").rglob("*.py"):
+                if ".venv" in p.parts or "__pycache__" in p.parts:
+                    continue
+                mt = p.stat().st_mtime
+                key = str(p)
+                if key in mtimes and mt > mtimes[key]:
+                    code = p.read_text(encoding="utf-8", errors="ignore")[:1200]
+                    agent.mutate_code(code, f"[{engine} // {branch}] Updated {p.name}")
+                    print(f"[↑] Synced AST delta for {p.name} ({branch})")
+                mtimes[key] = mt
+            time.sleep(2.0)
+        except KeyboardInterrupt:
+            break
+
+
 def main():
-    parser = argparse.ArgumentParser(description="GitPulse LAN Agent Client")
+    parser = argparse.ArgumentParser(description="GitPulse LAN Agent Client & Auto-Watcher")
     parser.add_argument("--server", default="auto", help="GitPulse mesh server URL (default: auto-discover via LAN UDP :9999)")
-    parser.add_argument("--id", default=f"agent-{os.getpid() % 1000}", help="Unique Agent ID")
-    parser.add_argument("--role", default="Worker Node", help="Role / Title of this agent")
+    parser.add_argument("--id", default="", help="Unique Agent ID")
+    parser.add_argument("--role", default="Autonomous Agent", help="Role / Title of this agent")
     parser.add_argument("--module", default="services/worker.py", help="Target module path")
+    parser.add_argument("--engine", default="", help="Agent Engine (Antigravity, Claude Code, Codex, Cursor)")
+    parser.add_argument("--branch", default="", help="Git branch name")
     parser.add_argument("--gossip", help="One-shot broadcast an idea/gossip and exit")
+    parser.add_argument("--watch", action="store_true", help="Auto-detect local agents + git branch and continuously stream updates")
     parser.add_argument("--interactive", "-i", action="store_true", help="Launch interactive CLI REPL")
 
     args = parser.parse_args()
     server_url = discover_lan_host() if args.server == "auto" else args.server
+    det_engine, det_branch = detect_local_agent_and_branch()
+    engine = args.engine or det_engine
+    branch = args.branch or det_branch
+    agent_id = args.id or f"agent-{socket.gethostname().lower()[:8]}-{branch.replace('/', '-')[:8]}"
+
     agent = GitPulseAgent(
         server_url=server_url,
-        agent_id=args.id,
+        agent_id=agent_id,
         role=args.role,
         target_module=args.module,
     )
 
-    if args.gossip:
-        agent.register()
+    if args.watch:
+        auto_watch_daemon(agent, engine, branch)
+    elif args.gossip:
+        agent.register(engine=engine, machine=socket.gethostname(), branch=branch)
         res = agent.send_idea(intent=args.gossip, gossip_message=args.gossip)
         print(f"Gossip sent: {res}")
     else:
+        agent.register(engine=engine, machine=socket.gethostname(), branch=branch)
         interactive_repl(agent)
 
 

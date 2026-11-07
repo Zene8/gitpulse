@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>GITPULSE</title>
+  <link rel="manifest" href="/manifest.json">
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { border-radius: 0 !important; box-sizing: border-box; }
@@ -57,7 +58,7 @@
         <span class="text-xs font-bold tracking-[0.2em] uppercase">GITHUB // MAIN</span>
       </div>
       <div class="h-3 w-[1px] bg-neutral-800"></div>
-      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[30vw]">
+      <div id="main-commits" class="flex items-center gap-2 overflow-x-auto max-w-[26vw]">
         <span class="text-[10px] text-neutral-600 tracking-widest">WAITING FOR UNIFIED PR</span>
       </div>
     </div>
@@ -74,8 +75,8 @@
       <button onclick="toggleLanDrawer()" id="lan-btn" class="border border-emerald-500/70 bg-emerald-950/20 hover:bg-emerald-950/50 text-emerald-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
         LAN // <span id="lan-ip-badge">127.0.0.1:8000</span>
       </button>
-      <button onclick="stepSim()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-white px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
-        + IDEA
+      <button onclick="scanAndPrompt()" class="border border-sky-500/80 bg-sky-950/30 hover:bg-sky-900/50 text-sky-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
+        ⟳ SCAN &amp; PROMPT AGENTS
       </button>
       <button onclick="runConflict()" class="border border-neutral-700 bg-black hover:bg-neutral-900 hover:border-fuchsia-400 text-fuchsia-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
         3-WAY MERGE
@@ -84,7 +85,7 @@
         3X RACE
       </button>
       <button id="auto-btn" onclick="toggleAuto()" class="border border-neutral-800 bg-black hover:border-neutral-500 text-neutral-400 px-3 py-1.5 text-[10px] tracking-widest uppercase transition">
-        AUTO
+        AUTO-PROMPT
       </button>
       <button onclick="flushGitHub()" class="border border-orange-500 bg-orange-600 hover:bg-orange-500 text-black font-bold px-3.5 py-1.5 text-[10px] tracking-widest uppercase transition">
         ↑ MERGE PR TO MAIN
@@ -92,30 +93,42 @@
     </div>
   </header>
 
-  <!-- ================= LAN HOST SETUP & AGENT CONNECT BAR ================= -->
+  <!-- ================= LAN INSTALLER & MULTI-AGENT / BRANCH CONNECT BAR ================= -->
   <section id="lan-drawer" class="hidden z-30 border-x border-b border-neutral-800 bg-black/95 px-4 py-3">
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
-      <!-- LAN Host CLI Join Command -->
-      <div class="lg:col-span-6 flex items-center justify-between border border-neutral-800 bg-neutral-950 px-3 py-2">
-        <div class="truncate mr-3">
-          <div class="text-[9px] text-neutral-500 tracking-widest uppercase mb-0.5">LAN ZERO-CONFIG JOIN (UDP :9999 AUTO-DISCOVERY OR HTTP)</div>
-          <code id="lan-cmd" class="text-[10px] text-emerald-400 select-all">python agent_client.py --id agent-node</code>
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+      <!-- 1-Line Auto-Installer for Any Machine on LAN -->
+      <div class="lg:col-span-5 flex items-center justify-between border border-neutral-800 bg-neutral-950 px-3 py-2">
+        <div class="truncate mr-2">
+          <div class="text-[9px] text-neutral-500 tracking-widest uppercase mb-0.5">1-LINE LAN INSTALL &amp; AUTO-DETECT DAEMON (POWERSHELL / SH)</div>
+          <code id="lan-cmd" class="text-[10px] text-emerald-400 select-all">irm http://127.0.0.1:8000/install.ps1 | iex</code>
         </div>
-        <button onclick="copyLanCmd()" id="copy-btn" class="shrink-0 border border-neutral-700 hover:border-white px-2.5 py-1 text-[9px] tracking-widest uppercase">
-          COPY CMD
-        </button>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button onclick="copyLanCmd()" id="copy-btn" class="border border-neutral-700 hover:border-white px-2 py-1 text-[9px] tracking-widest uppercase">
+            COPY
+          </button>
+          <button onclick="installDesktopApp()" class="border border-sky-500/70 text-sky-300 hover:bg-sky-950 px-2 py-1 text-[9px] tracking-widest uppercase">
+            APP WINDOW
+          </button>
+        </div>
       </div>
 
-      <!-- Direct LAN Agent Registration -->
-      <div class="lg:col-span-6 flex items-center gap-2">
-        <input id="new-agent-id" type="text" placeholder="agent-payments" value="agent-payments"
-          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2.5 py-2 text-[10px] text-white outline-none w-36" />
-        <input id="new-agent-mod" type="text" placeholder="services/pay.py" value="services/pay.py"
-          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2.5 py-2 text-[10px] text-white outline-none w-40" />
-        <input id="new-agent-idea" type="text" placeholder="def verify_tx(id: str) -> bool: return True"
-          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2.5 py-2 text-[10px] text-white outline-none flex-1" />
+      <!-- Direct Multi-Machine / Multi-Branch Agent Connect -->
+      <div class="lg:col-span-7 flex flex-wrap sm:flex-nowrap items-center gap-1.5">
+        <select id="new-agent-engine" class="bg-neutral-950 border border-neutral-800 px-2 py-2 text-[10px] text-white outline-none">
+          <option value="Claude Code">Claude Code</option>
+          <option value="Antigravity">Antigravity</option>
+          <option value="Codex">Codex</option>
+          <option value="Cursor">Cursor</option>
+          <option value="Aider">Aider</option>
+        </select>
+        <input id="new-agent-machine" type="text" placeholder="MACBOOK-PRO" value="MACBOOK-PRO"
+          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2 py-2 text-[10px] text-white outline-none w-28" />
+        <input id="new-agent-branch" type="text" placeholder="feat/oauth2" value="feat/oauth2"
+          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2 py-2 text-[10px] text-white outline-none w-28" />
+        <input id="new-agent-mod" type="text" placeholder="services/oauth.py" value="services/oauth.py"
+          class="bg-neutral-950 border border-neutral-800 focus:border-white px-2 py-2 text-[10px] text-white outline-none w-32" />
         <button onclick="connectLanAgent()" class="shrink-0 border border-emerald-500 bg-emerald-500 text-black font-bold px-3 py-2 text-[10px] tracking-widest uppercase hover:bg-emerald-400 transition">
-          + CONNECT AGENT
+          + JOIN MESH
         </button>
       </div>
     </div>
@@ -180,7 +193,7 @@
         AST MERKLE CLOUD // <span id="merkle-badge" class="text-neutral-500">00000000</span>
       </div>
       <div id="cloud-status" class="text-[9px] tracking-[0.2em] text-neutral-700 uppercase mt-1">
-        CAUSAL VECTOR GOSSIP &amp; 3-WAY AST SYNTHESIS
+        AUTO-DETECTING AGENTS &amp; BRANCHES ACROSS LAN
       </div>
     </div>
 
@@ -199,25 +212,25 @@
     let flushingAnim = false;
     let unmergedItems = [];
     let mergedPRs = [];
-    let hostUrl = location.origin;
+    let latestNodes = {};
 
     const CLOUD_SLOTS = [
-      { left: '16%', top: '34%' },
-      { left: '34%', top: '19%' },
-      { left: '53%', top: '17%' },
-      { left: '70%', top: '26%' },
-      { left: '24%', top: '50%' },
-      { left: '46%', top: '46%' },
+      { left: '15%', top: '34%' },
+      { left: '33%', top: '18%' },
+      { left: '53%', top: '16%' },
+      { left: '70%', top: '25%' },
+      { left: '23%', top: '50%' },
+      { left: '45%', top: '46%' },
       { left: '66%', top: '49%' },
       { left: '38%', top: '33%' },
     ];
 
     ws.onmessage = (event) => {
       const state = JSON.parse(event.data);
+      latestNodes = state.nodes || {};
       if (state.lan) {
-        hostUrl = state.lan.url;
         document.getElementById('lan-ip-badge').innerText = `${state.lan.ip}:${state.lan.port}`;
-        document.getElementById('lan-cmd').innerText = `python agent_client.py --server ${state.lan.url} --id agent-peer`;
+        document.getElementById('lan-cmd').innerText = `irm ${state.lan.url}/install.ps1 | iex`;
       }
       updateKPIs(state.metrics, state.cluster);
       processDAG(state.dag);
@@ -343,6 +356,9 @@
       field.innerHTML = visible.map((item, idx) => {
         const slot = CLOUD_SLOTS[idx % CLOUD_SLOTS.length];
         const delay = (idx * 0.45).toFixed(2);
+        const nodeInfo = latestNodes[item.agent_id] || {};
+        const engineBadge = nodeInfo.engine || 'AGENT';
+        const branchBadge = nodeInfo.branch || 'main';
 
         let border = 'border-neutral-700';
         let tagColor = 'text-neutral-400';
@@ -374,7 +390,7 @@
         } else if (item.kind === 'AGENT-JOIN' || item.kind === 'GOSSIP-IDEA') {
           border = 'border-emerald-400';
           tagColor = 'text-emerald-300';
-          tag = 'LAN PEER';
+          tag = 'DETECTED';
         }
 
         const diffLines = (item.diff || '+ ast_mutation()').split('\n').slice(0, 2).map(line => {
@@ -386,10 +402,10 @@
           <div onclick="rollback('${item.commit_id}')"
             title="Click to rollback mesh to #${item.commit_id}"
             style="left: ${slot.left}; top: ${slot.top}; animation-delay: ${delay}s;"
-            class="floating-card pointer-events-auto cursor-pointer absolute w-56 bg-black/95 border ${border} p-2.5 shadow-2xl hover:border-white transition">
+            class="floating-card pointer-events-auto cursor-pointer absolute w-60 bg-black/95 border ${border} p-2.5 shadow-2xl hover:border-white transition">
             <div class="flex justify-between items-center text-[9px] tracking-widest uppercase mb-1">
-              <span class="text-white font-bold">${item.agent_id.replace('agent-', '')}</span>
-              <span class="${tagColor}">${tag} #${item.commit_id.slice(0, 4)}</span>
+              <span class="text-white font-bold truncate">${escapeHtml(engineBadge)} <span class="text-neutral-500 font-normal">⎇ ${escapeHtml(branchBadge)}</span></span>
+              <span class="${tagColor} shrink-0 ml-1">${tag}</span>
             </div>
             <div class="text-[10px] text-neutral-300 truncate mb-1.5">${escapeHtml(item.intent)}</div>
             <div class="bg-neutral-950 border border-neutral-900 px-1.5 py-1 text-[9px] font-mono leading-tight">
@@ -413,27 +429,35 @@
           : 'border-red-600 bg-red-950/10';
 
         const vcStr = Object.entries(n.vector_clock).map(([k, v]) => `${k.replace('agent-', '')[0]}:${v}`).join(' ');
+        const engine = n.engine || 'Agent';
+        const machine = n.machine || 'LOCAL';
+        const branch = n.branch || 'main';
 
         return `
           <div class="border ${onlineBorder} bg-black/95 p-3 flex flex-col justify-between transition">
-            <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center justify-between mb-1.5">
               <div class="flex items-center gap-1.5 truncate">
                 <span class="w-1.5 h-1.5 shrink-0 ${n.online ? 'bg-emerald-400' : 'bg-red-500 animate-ping'}"></span>
-                <span class="text-xs font-bold tracking-[0.15em] truncate">${shortName}</span>
+                <span class="text-xs font-bold tracking-[0.12em] text-white truncate">${escapeHtml(engine.toUpperCase())}</span>
                 ${n.is_leader ? `<span class="text-[9px] bg-amber-500 text-black font-bold px-1 py-0.2 tracking-widest shrink-0">HOST T${n.term}</span>` : ''}
-                <span class="text-[10px] text-neutral-600 truncate">${n.target_module}</span>
               </div>
               <div class="flex items-center gap-1 shrink-0">
                 ${n.outbox_size > 0 ? `<span class="text-[9px] bg-red-950 text-red-300 border border-red-700 px-1 py-0.5">Q:${n.outbox_size}</span>` : ''}
-                <button onclick="sendQuickIdea('${n.agent_id}')" title="Send Idea up to Cloud"
-                  class="border border-neutral-800 text-neutral-400 hover:border-white hover:text-white px-1.5 py-0.5 text-[9px] tracking-widest uppercase transition">
-                  ↑
+                <button onclick="promptSingleAgent('${n.agent_id}')" title="Auto-Prompt Agent for AST Update"
+                  class="border border-sky-800 text-sky-300 hover:bg-sky-950 px-1.5 py-0.5 text-[9px] tracking-widest uppercase transition">
+                  PROMPT ↑
                 </button>
                 <button onclick="togglePartition('${n.agent_id}')"
-                  class="border ${n.online ? 'border-neutral-800 text-neutral-400 hover:border-red-500 hover:text-red-400' : 'border-red-500 text-red-300 bg-red-950/40'} px-2 py-0.5 text-[9px] tracking-widest uppercase transition">
+                  class="border ${n.online ? 'border-neutral-800 text-neutral-400 hover:border-red-500 hover:text-red-400' : 'border-red-500 text-red-300 bg-red-950/40'} px-1.5 py-0.5 text-[9px] tracking-widest uppercase transition">
                   ${n.online ? (n.is_leader ? 'KILL HOST' : 'LINKED') : 'REJOIN'}
                 </button>
               </div>
+            </div>
+
+            <!-- Machine + Git Branch + Target Module Strip -->
+            <div class="flex items-center justify-between text-[9px] text-neutral-400 mb-2 tracking-wider">
+              <span class="truncate">@${escapeHtml(machine)} // <strong class="text-emerald-400">⎇ ${escapeHtml(branch)}</strong></span>
+              <span class="text-neutral-600 truncate ml-2">${escapeHtml(n.target_module)}</span>
             </div>
 
             <div class="bg-neutral-950 border border-neutral-900 px-2 py-1.5 mb-2 flex justify-between items-center text-[10px]">
@@ -442,7 +466,7 @@
             </div>
 
             <div class="flex justify-between items-center text-[9px] text-neutral-500 tracking-wider uppercase">
-              <span class="truncate max-w-[65%]">${escapeHtml(n.intent)}</span>
+              <span class="truncate max-w-[65%]">${escapeHtml(n.last_prompt || n.intent)}</span>
               <span class="text-neutral-400">[${vcStr}] Δ${n.local_micro_commits}</span>
             </div>
           </div>
@@ -464,37 +488,42 @@
       navigator.clipboard.writeText(cmd);
       const btn = document.getElementById('copy-btn');
       btn.innerText = 'COPIED';
-      setTimeout(() => { btn.innerText = 'COPY CMD'; }, 1200);
+      setTimeout(() => { btn.innerText = 'COPY'; }, 1200);
+    }
+
+    function installDesktopApp() {
+      window.open(location.href, 'GitPulseApp', 'width=1280,height=800,menubar=no,toolbar=no,location=no,status=no');
     }
 
     async function connectLanAgent() {
-      const id = document.getElementById('new-agent-id').value.trim() || `agent-${Math.floor(Math.random()*900+100)}`;
-      const mod = document.getElementById('new-agent-mod').value.trim() || `services/${id.replace('agent-','')}.py`;
-      const codeInput = document.getElementById('new-agent-idea').value.trim();
-      const code = codeInput || `def ${id.replace('-', '_')}_handler(payload: dict) -> bool:\n    return True\n`;
+      const engine = document.getElementById('new-agent-engine').value;
+      const machine = document.getElementById('new-agent-machine').value.trim() || 'LAN-PEER';
+      const branch = document.getElementById('new-agent-branch').value.trim() || 'feat/branch';
+      const mod = document.getElementById('new-agent-mod').value.trim() || 'services/worker.py';
+      const slug = branch.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+      const id = `agent-${engine.split(' ')[0].toLowerCase()}-${slug.slice(0, 8)}`;
 
       await fetch('/api/agents/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent_id: id,
-          role: 'LAN Peer Agent',
+          role: `${engine} Worker`,
           target_module: mod,
-          initial_code: code
+          engine: engine,
+          machine: machine,
+          branch: branch,
+          initial_code: `def ${slug.replace(/-/g, '_')}_handler(ctx: dict) -> bool:\n    return True\n`
         })
       });
     }
 
-    async function sendQuickIdea(agentId) {
-      await fetch('/api/agents/gossip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agent_id: agentId,
-          intent: `Speculative AST update from ${agentId}`,
-          gossip_message: `def sync_${Math.floor(Math.random()*99)}() -> bool: return True`
-        })
-      });
+    async function scanAndPrompt() {
+      await fetch('/api/scan', { method: 'POST' });
+    }
+
+    async function promptSingleAgent(agentId) {
+      await fetch(`/api/prompt/${agentId}`, { method: 'POST' });
     }
 
     async function stepSim() { await fetch('/api/step', { method: 'POST' }); }
@@ -517,12 +546,12 @@
       if (autoTimer) {
         clearInterval(autoTimer);
         autoTimer = null;
-        btn.innerText = 'AUTO';
+        btn.innerText = 'AUTO-PROMPT';
         btn.className = 'border border-neutral-800 bg-black hover:border-neutral-500 text-neutral-400 px-3 py-1.5 text-[10px] tracking-widest uppercase transition';
       } else {
-        stepSim();
-        autoTimer = setInterval(stepSim, 1800);
-        btn.innerText = 'AUTO: ON';
+        scanAndPrompt();
+        autoTimer = setInterval(scanAndPrompt, 2400);
+        btn.innerText = 'AUTO-PROMPT: ON';
         btn.className = 'border border-emerald-500 bg-emerald-950/30 text-emerald-300 px-3 py-1.5 text-[10px] tracking-widest uppercase transition';
       }
     }

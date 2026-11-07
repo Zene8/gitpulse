@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 workspace_repo/
 mesh_state.db*
+.gitpulse/
