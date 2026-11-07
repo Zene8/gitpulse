@@ -1937,9 +1937,13 @@ class MeshCluster:
         contract = added + sig_changed + removed
         touched_symbols = added + sig_changed + body_changed
 
-        # Echo suppression: if every changed/removed symbol already matches known_peer_symbols, this is our own disk sync write
-        if (touched_symbols or removed) and not new_imports:
+        # Echo suppression: if every changed/removed symbol and import already matches known_peer_symbols, this is our own disk sync write
+        if touched_symbols or removed or new_imports:
             is_echo = True
+            for imp in new_imports:
+                if f"{rel_path}:__import__:{imp}" not in node.known_peer_symbols:
+                    is_echo = False
+                    break
             for k in touched_symbols:
                 peer_sym = node.known_peer_symbols.get(f"{rel_path}:{k}")
                 if not peer_sym or peer_sym.signature_hash != new_syms[k].signature_hash or peer_sym.body_hash != new_syms[k].body_hash:
@@ -2049,6 +2053,10 @@ class MeshCluster:
         peers = [p for p, n in self.nodes.items() if p != agent_id and n.online]
         for p in peers:
             peer = self.nodes[p]
+            for imp in new_imports:
+                peer.known_peer_symbols[f"{rel_path}:__import__:{imp}"] = ASTSymbol(
+                    name=imp, kind="import", signature=imp, signature_hash="imp", body_hash="imp", source=imp, owner_agent=agent_id
+                )
             for k in removed:
                 peer.known_peer_symbols.pop(f"{rel_path}:{k}", None)
             for k in touched_symbols:
