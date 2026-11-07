@@ -48,41 +48,87 @@ def _pull(server: str, body: dict) -> list:
         return []
 
 
-def patch_source_simple(target_code: str, symbol_name: str, new_symbol_code: str) -> str:
-    """AST splice of function or class into target_code."""
+def _extract_imports_simple(code: str) -> list:
+    imports = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return imports
+    raw_lines = code.splitlines()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            end = getattr(node, "end_lineno", node.lineno)
+            stmt = "\n".join(raw_lines[node.lineno - 1:end]).strip()
+            if stmt and stmt not in imports:
+                imports.append(stmt)
+    return imports
+
+
+def _ensure_imports_simple(target_code: str, imports: list = None) -> str:
+    if not imports:
+        return target_code
+    existing = set(_extract_imports_simple(target_code))
+    missing = [imp.strip() for imp in imports if imp.strip() and imp.strip() not in existing]
+    if not missing:
+        return target_code
     try:
         tree = ast.parse(target_code)
-        new_tree = ast.parse(new_symbol_code)
-        if not new_tree.body:
+        insert_line = 0
+        for idx, node in enumerate(tree.body):
+            if idx == 0 and isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant) and isinstance(node.value.value, str):
+                insert_line = getattr(node, "end_lineno", node.lineno)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                insert_line = getattr(node, "end_lineno", node.lineno)
+            else:
+                break
+        lines = target_code.splitlines(keepends=True)
+        block = "".join(m + "\n" for m in missing)
+        if insert_line == 0 and lines and lines[0].startswith("#!"):
+            insert_line = 1
+        return "".join(lines[:insert_line]) + block + "".join(lines[insert_line:])
+    except SyntaxError:
+        return "\n".join(missing) + "\n" + target_code
+
+
+def patch_source_simple(
+    target_code: str,
+    symbol_name: str,
+    new_symbol_code: str,
+    action: str = "upsert",
+    imports: list = None,
+) -> str:
+    """Line-exact splice of function, class, or assignment into target_code (preserves formatting & comments)."""
+    try:
+        target_code = _ensure_imports_simple(target_code, imports)
+        tree = ast.parse(target_code)
+        if action != "delete":
+            new_tree = ast.parse(new_symbol_code)
+            if not new_tree.body:
+                return target_code
+        lines = target_code.splitlines(keepends=True)
+        for node in tree.body:
+            matched = False
+            start = node.lineno - 1
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == symbol_name:
+                matched = True
+                start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]) - 1
+            elif isinstance(node, ast.Assign):
+                targets = [ast.unparse(t) for t in node.targets]
+                if targets and targets[0] == symbol_name:
+                    matched = True
+                    start = node.lineno - 1
+            if matched:
+                end = node.end_lineno
+                if action == "delete":
+                    while end < len(lines) and not lines[end].strip():
+                        end += 1
+                    return "".join(lines[:start]) + "".join(lines[end:])
+                repl = new_symbol_code.strip("\n") + "\n"
+                return "".join(lines[:start]) + repl + "".join(lines[end:])
+        if action == "delete":
             return target_code
-        new_node = new_tree.body[0]
-
-        class Replacer(ast.NodeTransformer):
-            def __init__(self, name, node):
-                self.name = name
-                self.node = node
-                self.replaced = False
-            def visit_FunctionDef(self, n):
-                if n.name == self.name:
-                    self.replaced = True
-                    return self.node
-                return n
-            def visit_AsyncFunctionDef(self, n):
-                if n.name == self.name:
-                    self.replaced = True
-                    return self.node
-                return n
-            def visit_ClassDef(self, n):
-                if n.name == self.name:
-                    self.replaced = True
-                    return self.node
-                return n
-
-        rep = Replacer(symbol_name, new_node)
-        updated = rep.visit(tree)
-        ast.fix_missing_locations(updated)
-        if rep.replaced:
-            return ast.unparse(updated) + "\n"
+        if not target_code.strip():
+            return new_symbol_code.strip() + "\n"
         return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
     except Exception:
         return target_code
@@ -96,16 +142,18 @@ def _apply_patches_locally(items: list, cwd: str) -> int:
     for it in items:
         for p in it.get("patches") or []:
             sym = p.get("symbol")
-            code = p.get("code")
+            code = p.get("code", "")
+            action = p.get("action", "upsert")
+            imports = p.get("imports")
             rel = p.get("path") or p.get("file")
-            if not (sym and code and rel):
+            if not (sym and rel):
                 continue
             candidates = [cwd_path / rel, cwd_path / rel.split("/", 1)[-1] if "/" in rel else None]
             for target in candidates:
                 if target and target.is_file() and target.suffix == ".py":
                     try:
                         old_text = target.read_text(encoding="utf-8")
-                        new_text = patch_source_simple(old_text, sym, code)
+                        new_text = patch_source_simple(old_text, sym, code, action=action, imports=imports)
                         if new_text != old_text:
                             target.write_text(new_text, encoding="utf-8")
                             applied += 1
@@ -117,7 +165,8 @@ def _apply_patches_locally(items: list, cwd: str) -> int:
 def _message(items: list) -> str:
     lines = []
     collisions = [it for it in items if it.get("is_collision")]
-    contracts = [it for it in items if not it.get("is_collision")]
+    gossips = [it for it in items if it.get("is_gossip") and not it.get("is_collision")]
+    contracts = [it for it in items if not it.get("is_collision") and not it.get("is_gossip")]
 
     if collisions:
         lines.append("⚠️ [GITPULSE COLLISION WARNING] Concurrent edits detected on the same code symbol:")
@@ -125,6 +174,12 @@ def _message(items: list) -> str:
             for l in it.get("contract") or []:
                 lines.append(f"  {l}")
         lines.append("Coordinate with your peer or edit another function to prevent merge conflicts.\n")
+
+    if gossips:
+        lines.append("💬 [GitPulse Peer Context] Message(s) from other agents in your mesh:")
+        for it in gossips:
+            for l in it.get("contract") or []:
+                lines.append(f"  {l}")
 
     if contracts:
         lines.append(f"[GitPulse] {len(contracts)} interface change(s) from other agents working in this codebase. "
@@ -170,7 +225,7 @@ def run_hook() -> None:
                 "session": _arg("--session"), "machine": socket.gethostname(),
                 "cwd": target_dir, "event": "PreInvocation",
             })
-        if items and target_dir:
+        if items and target_dir and "--apply-disk" in sys.argv:
             _apply_patches_locally(items, target_dir)
         print(json.dumps({"injectSteps": [{"ephemeralMessage": _message(items)}]} if items else {}))
         return
@@ -184,7 +239,7 @@ def run_hook() -> None:
     })
     if not items:
         return
-    if evt.get("cwd"):
+    if evt.get("cwd") and "--apply-disk" in sys.argv:
         _apply_patches_locally(items, evt.get("cwd"))
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": evt.get("hook_event_name") or "UserPromptSubmit",
