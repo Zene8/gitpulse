@@ -18,6 +18,7 @@ Stdlib only. If the server is down it exits silently in < 1.5 s, so it never blo
   uninstall     :  python gitpulse_hook.py uninstall --dir PROJECT [--agy]
 """
 
+import ast
 import json
 import os
 import socket
@@ -47,12 +48,90 @@ def _pull(server: str, body: dict) -> list:
         return []
 
 
-def _message(items: list) -> str:
-    lines = [f"[GitPulse] {len(items)} interface change(s) from other agents working in this codebase. "
-             "Code that calls these must match the new signatures:"]
+def patch_source_simple(target_code: str, symbol_name: str, new_symbol_code: str) -> str:
+    """AST splice of function or class into target_code."""
+    try:
+        tree = ast.parse(target_code)
+        new_tree = ast.parse(new_symbol_code)
+        if not new_tree.body:
+            return target_code
+        new_node = new_tree.body[0]
+
+        class Replacer(ast.NodeTransformer):
+            def __init__(self, name, node):
+                self.name = name
+                self.node = node
+                self.replaced = False
+            def visit_FunctionDef(self, n):
+                if n.name == self.name:
+                    self.replaced = True
+                    return self.node
+                return n
+            def visit_AsyncFunctionDef(self, n):
+                if n.name == self.name:
+                    self.replaced = True
+                    return self.node
+                return n
+            def visit_ClassDef(self, n):
+                if n.name == self.name:
+                    self.replaced = True
+                    return self.node
+                return n
+
+        rep = Replacer(symbol_name, new_node)
+        updated = rep.visit(tree)
+        ast.fix_missing_locations(updated)
+        if rep.replaced:
+            return ast.unparse(updated) + "\n"
+        return target_code.rstrip() + "\n\n" + new_symbol_code.strip() + "\n"
+    except Exception:
+        return target_code
+
+
+def _apply_patches_locally(items: list, cwd: str) -> int:
+    applied = 0
+    if not cwd:
+        return 0
+    cwd_path = Path(cwd)
     for it in items:
-        lines.append(f"- {it.get('from_label', it.get('from'))} on {it.get('machine', '?')} changed {it.get('file')}:")
-        lines.extend(f"    {l}" for l in it.get("contract") or [])
+        for p in it.get("patches") or []:
+            sym = p.get("symbol")
+            code = p.get("code")
+            rel = p.get("path") or p.get("file")
+            if not (sym and code and rel):
+                continue
+            candidates = [cwd_path / rel, cwd_path / rel.split("/", 1)[-1] if "/" in rel else None]
+            for target in candidates:
+                if target and target.is_file() and target.suffix == ".py":
+                    try:
+                        old_text = target.read_text(encoding="utf-8")
+                        new_text = patch_source_simple(old_text, sym, code)
+                        if new_text != old_text:
+                            target.write_text(new_text, encoding="utf-8")
+                            applied += 1
+                    except Exception:
+                        pass
+    return applied
+
+
+def _message(items: list) -> str:
+    lines = []
+    collisions = [it for it in items if it.get("is_collision")]
+    contracts = [it for it in items if not it.get("is_collision")]
+
+    if collisions:
+        lines.append("⚠️ [GITPULSE COLLISION WARNING] Concurrent edits detected on the same code symbol:")
+        for it in collisions:
+            for l in it.get("contract") or []:
+                lines.append(f"  {l}")
+        lines.append("Coordinate with your peer or edit another function to prevent merge conflicts.\n")
+
+    if contracts:
+        lines.append(f"[GitPulse] {len(contracts)} interface change(s) from other agents working in this codebase. "
+                     "Code that calls these must match the new signatures:")
+        for it in contracts:
+            lines.append(f"- {it.get('from_label', it.get('from'))} on {it.get('machine', '?')} changed {it.get('file')}:")
+            lines.extend(f"    {l}" for l in it.get("contract") or [])
     return "\n".join(lines)
 
 
@@ -84,12 +163,15 @@ def run_hook() -> None:
         # Antigravity: always answer with JSON, even when there is nothing to say.
         items = []
         ws = evt.get("workspacePaths") or []
+        target_dir = _arg("--dir") or (ws[0] if ws else "")
         if server and (evt.get("conversationId") or ws):
             items = _pull(server, {
                 "engine": "Antigravity", "conversation_id": evt.get("conversationId", ""),
                 "session": _arg("--session"), "machine": socket.gethostname(),
-                "cwd": _arg("--dir") or (ws[0] if ws else ""), "event": "PreInvocation",
+                "cwd": target_dir, "event": "PreInvocation",
             })
+        if items and target_dir:
+            _apply_patches_locally(items, target_dir)
         print(json.dumps({"injectSteps": [{"ephemeralMessage": _message(items)}]} if items else {}))
         return
     sid = evt.get("session_id") or ""
@@ -102,6 +184,8 @@ def run_hook() -> None:
     })
     if not items:
         return
+    if evt.get("cwd"):
+        _apply_patches_locally(items, evt.get("cwd"))
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": evt.get("hook_event_name") or "UserPromptSubmit",
         "additionalContext": _message(items),

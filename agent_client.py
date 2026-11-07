@@ -583,7 +583,37 @@ def auto_watch_daemon(agent: GitPulseAgent, session: str, hooks: str = "ask", re
                         "old_code": ch["old"], "new_code": ch["new"],
                     })
                     kind = res.get("kind", res.get("status"))
-                    print(f"[^] {ch['rel']}: {kind} ({res.get('bytes_sent', 0)} B sent)")
+                    if kind == "collision":
+                        print(f"[!] COLLISION PRE-EMPTED on {ch['rel']}!")
+                    else:
+                        print(f"[^] {ch['rel']}: {kind} ({res.get('bytes_sent', 0)} B sent)")
+
+                # Check inbox for local agents to sync AST patches across machines
+                for a in agents:
+                    try:
+                        inbox_res = agent._post("/api/agents/inbox/pull", {
+                            "claude_session_id": a.get("session_id", ""),
+                            "engine": a["engine"],
+                            "session": session,
+                            "machine": mach,
+                            "cwd": a["cwd"],
+                        })
+                        items = inbox_res.get("items") or []
+                        for it in items:
+                            if it.get("is_collision"):
+                                print(f"[!] COLLISION WARNING for {a['engine']}: {it.get('contract', [''])[0]}")
+                            for p in it.get("patches") or []:
+                                rel = p.get("path") or p.get("file")
+                                candidates = [Path(a["cwd"]) / rel, Path(a["cwd"]) / rel.split("/", 1)[-1] if "/" in rel else None]
+                                for target in candidates:
+                                    if target and target.is_file() and target.suffix == ".py":
+                                        old_txt = target.read_text(encoding="utf-8")
+                                        new_txt = gitpulse_hook.patch_source_simple(old_txt, p["symbol"], p["code"])
+                                        if new_txt != old_txt:
+                                            target.write_text(new_txt, encoding="utf-8")
+                                            print(f"[+] Synced AST patch '{p['symbol']}' into {target.name}")
+                    except Exception:
+                        pass
             time.sleep(3.0)
         except KeyboardInterrupt:
             print("\nStopped.")

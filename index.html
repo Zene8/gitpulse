@@ -43,7 +43,7 @@
   --machine: #b45309;
   --warn: #d97706;
 }
-* { box-sizing: border-box; border-radius: 0 !important; }
+* { box-sizing: border-box; border-radius: 4px; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 13.5px/1.5 Inter, system-ui, sans-serif; }
 a { color: var(--contract); text-decoration: none; } a:hover { text-decoration: underline; }
 code, .mono { font-family: var(--mono); }
@@ -84,12 +84,12 @@ main { max-width: 1400px; margin: 0 auto; padding: 16px 24px 40px; }
 .legend { display: flex; gap: 16px; padding: 10px 16px; color: var(--mute); font-size: 11.5px; flex-wrap: wrap; border-top: 1px solid var(--line); background: var(--panel); align-items: center; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 8px; height: 8px; display: inline-block; }
-.legend i.sq { background: transparent; border: 1.5px solid var(--line2); }
-.legend i.sq-node { background: var(--panel2); border: 1px solid var(--line2); }
+.legend i.sq { background: transparent; border: 1.5px dashed var(--line2); border-radius: 2px; }
+.legend i.sq-node { background: var(--panel2); border: 1px solid var(--line2); border-radius: 50%; }
 .legend-hint { margin-left: auto; color: var(--dim); font-size: 11px; font-family: var(--mono); }
 
 /* Secondary grid below network */
-.grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.grid { display: block; }
 .panel { background: var(--panel); border: 1px solid var(--line); }
 
 /* machines & agent cards (less colors, sharp edges) */
@@ -182,8 +182,8 @@ details .linkrow { margin-top: 8px; }
 .fine { color: var(--dim); font-size: 11.5px; margin-top: 12px; }
 
 /* SVG styles */
-.agent-tile-group { cursor: pointer; }
-.agent-tile-group:hover rect.agent-base { stroke: var(--fg) !important; }
+.agent-node-group { cursor: pointer; }
+.agent-node-group:hover circle.agent-base { stroke: var(--fg) !important; }
 
 @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { main, .top { padding-left: 14px; padding-right: 14px; } .share { grid-template-columns: 1fr; } }
@@ -196,6 +196,7 @@ details .linkrow { margin-top: 8px; }
   <div class="where" id="where">connecting…</div>
   <div class="spacer"></div>
   <span class="pill" id="countPill"></span>
+  <button class="btn sm" id="coalesceBtn" style="margin-left:4px;" title="Coalesce pending AST micro-edits into a clean Git commit">Coalesce Git</button>
   <button class="btn primary" id="shareBtn">Invite</button>
   <div class="menu" id="menu">
     <button class="btn" id="menuBtn" aria-label="More">•••</button>
@@ -217,7 +218,7 @@ details .linkrow { margin-top: 8px; }
 <main>
   <div class="repos" id="repos"></div>
 
-  <!-- NETWORK UI: CENTRAL PIECE (Sharp rectangles, no circles, smaller labels) -->
+  <!-- NETWORK UI: CENTRAL PIECE -->
   <div class="panel net-panel">
     <div class="ph">
       <h2>Mesh Network</h2>
@@ -225,21 +226,16 @@ details .linkrow { margin-top: 8px; }
     </div>
     <svg id="net" viewBox="0 0 960 460" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mesh network of machines and coding agents"></svg>
     <div class="legend">
-      <span><i class="sq"></i>machine container</span>
-      <span><i class="sq-node"></i>agent tile</span>
+      <span><i class="sq"></i>device / computer</span>
+      <span><i class="sq-node"></i>agent node</span>
       <span><i style="background:var(--contract)"></i>contract packet (sig change)</span>
       <span><i style="background:var(--private)"></i>private edit (0 B)</span>
       <span><i style="background:var(--join)"></i>hook delivery</span>
-      <span class="legend-hint">Click any agent tile for sent/received breakdown</span>
+      <span class="legend-hint">Click any agent for sent/received breakdown</span>
     </div>
   </div>
 
   <div class="grid">
-    <div class="panel">
-      <div class="ph"><h2>Agents by Machine</h2><span class="hint">click for details</span></div>
-      <div id="machines" style="padding:14px;"></div>
-      <div class="else" id="elsewhere"></div>
-    </div>
     <div class="panel">
       <div class="ph"><h2>What got passed</h2><span class="hint">newest first</span></div>
       <div class="feed" id="feed"></div>
@@ -312,9 +308,11 @@ function render(st) {
   if ($('agentModal').classList.contains('open') && selectedAgentId) openAgentModal(selectedAgentId);
 
   const els = st.other_agents || [];
-  $('elsewhere').textContent = els.length
-    ? `Also running on ${st.host_machine}, in other folders (not tracked): ` + els.map((a) => `${a.engine} in ${a.cwd.split(/[\\/]/).pop()}`).join(', ')
-    : '';
+  if ($('elsewhere')) {
+    $('elsewhere').textContent = els.length
+      ? `Also running on ${st.host_machine}, in other folders (not tracked): ` + els.map((a) => `${a.engine} in ${a.cwd.split(/[\\/]/).pop()}`).join(', ')
+      : '';
+  }
   firstRender = false;
 }
 
@@ -398,21 +396,23 @@ function renderNet(nodes, st) {
       links += `<line x1="${lx1}" y1="${ly1}" x2="${lx2}" y2="${ly2}" stroke="${line}" stroke-width="${live ? 2 : 1}" />`;
       if (live) links += `<line class="flow" x1="${lx1}" y1="${ly1}" x2="${lx2}" y2="${ly2}" stroke="${con}" stroke-width="1.5" stroke-dasharray="3 8" opacity=".8" />`;
 
-      // Machine rectangular box
+      // Machine rectangular box with dotted lines and 4px rounded corners
       clusters += `<g opacity="${live || g.name === 'demo' ? 1 : .45}">
-        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="${panel}" stroke="${line}" stroke-width="1.5" />
-        <rect x="${bx}" y="${by}" width="${bw}" height="32" fill="${panel2}" stroke="${line}" stroke-width="1" />
+        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="4" ry="4" fill="${panel}" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
+        <rect x="${bx}" y="${by}" width="${bw}" height="32" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
         <text x="${bx + 12}" y="${by + 21}" fill="${fg}" font-size="11.5" font-weight="700" font-family="Inter, system-ui, sans-serif" letter-spacing=".04em">${esc(g.name.toUpperCase())}</text>
         <text x="${bx + bw - 12}" y="${by + 21}" text-anchor="end" fill="${host ? con : dim}" font-size="9.5" font-weight="700" font-family="var(--mono)">${host ? 'HOST' : 'PEER'} · ${on} ACTIVE</text>
       </g>`;
 
-      // Inside: Sharp Agent tiles
+      // Inside: Circular Agent nodes
       g.nodes.forEach((x, i) => {
         const tx = bx + 10;
         const ty = by + 38 + i * 48;
         const tw = bw - 20;
         const th = 42;
-        pos[x.agent_id] = [tx + tw / 2, ty + th / 2];
+        const cx = tx + 22;
+        const cy = ty + th / 2;
+        pos[x.agent_id] = [cx, cy];
 
         const isSelected = selectedAgentId === x.agent_id;
         const sent = flows.filter((f) => f.source === x.agent_id && f.kind === 'contract').length;
@@ -421,30 +421,32 @@ function renderNet(nodes, st) {
         const rxColor = x.delivery === 'hook' ? (x.hook_last_pull ? ok : warn) : x.delivery === 'no_hook' ? warn : dim;
         const m = x.meta || {};
 
-        agents += `<g class="agent-tile-group" onclick="openAgentModal('${esc(x.agent_id)}')">
+        agents += `<g class="agent-node-group" onclick="openAgentModal('${esc(x.agent_id)}')">
           <title>${esc(x.label)} (${esc(x.engine)})\n↑ ${sent} contracts sent · ↓ ${recv} received\nClick to inspect sent/received activity</title>
-          <rect id="agent-tile-${esc(x.agent_id)}" class="agent-base" x="${tx}" y="${ty}" width="${tw}" height="${th}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : line2}" stroke-width="${isSelected ? 1.5 : 1}" />
-          <rect x="${tx}" y="${ty}" width="3.5" height="${th}" fill="${x.color || dim}" />
-          <rect x="${tx + 10}" y="${ty + 9}" width="24" height="24" fill="${panel2}" stroke="${line}" stroke-width="1" />
-          <text x="${tx + 22}" y="${ty + 25}" text-anchor="middle" fill="${fg}" font-size="10" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
-          <text x="${tx + 42}" y="${ty + 20}" fill="${fg}" font-size="11" font-weight="600">${esc(x.label)}</text>
-          <text x="${tx + 42}" y="${ty + 33}" fill="${dim}" font-size="9" font-family="var(--mono)">${esc(x.engine)} · ${m.pid ? 'pid ' + m.pid : (x.online ? 'active' : 'offline')}</text>
+          <rect x="${tx}" y="${ty}" width="${tw}" height="${th}" rx="4" ry="4" fill="${isSelected ? panel2 : 'transparent'}" stroke="${isSelected ? fg : line}" stroke-width="${isSelected ? 1.5 : 1}" opacity="${isSelected ? 1 : 0.4}" />
+          <!-- Circular Agent Node -->
+          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="16" fill="${panel2}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2 : 1.5}" />
+          <circle cx="${cx + 12}" cy="${cy - 12}" r="4" fill="${x.online ? (x.color || ok) : dim}" />
+          <text x="${cx}" y="${cy + 4}" text-anchor="middle" fill="${fg}" font-size="10" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
+          
+          <text x="${tx + 46}" y="${ty + 19}" fill="${fg}" font-size="11" font-weight="600">${esc(x.label)}</text>
+          <text x="${tx + 46}" y="${ty + 32}" fill="${dim}" font-size="9" font-family="var(--mono)">${esc(x.engine)} · ${m.pid ? 'pid ' + m.pid : (x.online ? 'active' : 'offline')}</text>
           <g transform="translate(${tx + tw - 84}, ${ty + 11})">
-            <rect x="0" y="0" width="76" height="20" fill="${panel2}" stroke="${line}" stroke-width="1" />
+            <rect x="0" y="0" width="76" height="20" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
             <text x="6" y="14" fill="${sent ? con : dim}" font-size="9.5" font-weight="700" font-family="var(--mono)">↑${sent}</text>
             <text x="32" y="14" fill="${recv ? join : dim}" font-size="9.5" font-weight="700" font-family="var(--mono)">↓${recv}</text>
-            <rect x="60" y="6" width="8" height="8" fill="${rxColor}" />
+            <circle cx="64" cy="10" r="3.5" fill="${rxColor}" />
           </g>
         </g>`;
       });
     });
 
-    // If only 1 machine, show a clean, sharp peer invite placeholder on the right
+    // If only 1 machine, show a clean peer invite placeholder on the right
     if (M === 1) {
       const px = 580, py = hub[1] - 80, pw = 340, ph = 160;
       links += `<line x1="${rxRelay + rw}" y1="${hub[1]}" x2="${px}" y2="${hub[1]}" stroke="${line}" stroke-width="1" stroke-dasharray="3 3" opacity=".5" />`;
       clusters += `<g opacity=".5">
-        <rect x="${px}" y="${py}" width="${pw}" height="${ph}" fill="transparent" stroke="${line2}" stroke-width="1" stroke-dasharray="4 4" />
+        <rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="4" ry="4" fill="transparent" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
         <text x="${px + pw / 2}" y="${py + 64}" text-anchor="middle" fill="${mute}" font-size="12" font-weight="600">+ Connect Peer Machine</text>
         <text x="${px + pw / 2}" y="${py + 84}" text-anchor="middle" fill="${dim}" font-size="10.5">Laptop or VM on LAN / Internet</text>
         <text x="${px + pw / 2}" y="${py + 104}" text-anchor="middle" fill="${dim}" font-size="9.5" font-family="var(--mono)">Click 'Invite' top right</text>
@@ -468,8 +470,8 @@ function renderNet(nodes, st) {
       links += `<line x1="${lx1}" y1="${ly1}" x2="${hub[0]}" y2="${hub[1]}" stroke="${line}" stroke-width="1.5" />`;
 
       clusters += `<g>
-        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="${panel}" stroke="${line}" stroke-width="1.5" />
-        <rect x="${bx}" y="${by}" width="${bw}" height="28" fill="${panel2}" stroke="${line}" stroke-width="1" />
+        <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="4" ry="4" fill="${panel}" stroke="${line2}" stroke-width="1.5" stroke-dasharray="4 4" />
+        <rect x="${bx}" y="${by}" width="${bw}" height="28" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
         <text x="${bx + 10}" y="${by + 19}" fill="${fg}" font-size="11" font-weight="700">${esc(g.name.toUpperCase())}</text>
         <text x="${bx + bw - 10}" y="${by + 19}" text-anchor="end" fill="${dim}" font-size="9" font-family="var(--mono)">${on} ONLINE</text>
       </g>`;
@@ -479,23 +481,28 @@ function renderNet(nodes, st) {
         const ty = by + 34 + i * 44;
         const tw = bw - 16;
         const th = 38;
-        pos[x.agent_id] = [tx + tw / 2, ty + th / 2];
+        const cx = tx + 20;
+        const cy = ty + th / 2;
+        pos[x.agent_id] = [cx, cy];
         const isSelected = selectedAgentId === x.agent_id;
-        agents += `<g class="agent-tile-group" onclick="openAgentModal('${esc(x.agent_id)}')">
-          <rect id="agent-tile-${esc(x.agent_id)}" class="agent-base" x="${tx}" y="${ty}" width="${tw}" height="${th}" fill="${isSelected ? panel2 : panel}" stroke="${isSelected ? fg : line2}" stroke-width="${isSelected ? 1.5 : 1}" />
-          <rect x="${tx}" y="${ty}" width="3" height="${th}" fill="${x.color || dim}" />
-          <text x="${tx + 12}" y="${ty + 18}" fill="${fg}" font-size="10.5" font-weight="600">${esc(x.label)}</text>
-          <text x="${tx + 12}" y="${ty + 30}" fill="${dim}" font-size="8.5" font-family="var(--mono)">${esc(x.engine)}</text>
+        agents += `<g class="agent-node-group" onclick="openAgentModal('${esc(x.agent_id)}')">
+          <rect x="${tx}" y="${ty}" width="${tw}" height="${th}" rx="4" ry="4" fill="${isSelected ? panel2 : 'transparent'}" stroke="${isSelected ? fg : line}" stroke-width="${isSelected ? 1.5 : 1}" opacity="${isSelected ? 1 : 0.4}" />
+          <!-- Circular Agent Node -->
+          <circle id="agent-node-${esc(x.agent_id)}" class="agent-base" cx="${cx}" cy="${cy}" r="14" fill="${panel2}" stroke="${isSelected ? fg : (x.color || line2)}" stroke-width="${isSelected ? 2 : 1.5}" />
+          <circle cx="${cx + 10}" cy="${cy - 10}" r="3" fill="${x.online ? (x.color || ok) : dim}" />
+          <text x="${cx}" y="${cy + 3.5}" text-anchor="middle" fill="${fg}" font-size="9" font-weight="700" font-family="var(--mono)">${esc(initials(x))}</text>
+          <text x="${tx + 40}" y="${ty + 18}" fill="${fg}" font-size="10.5" font-weight="600">${esc(x.label)}</text>
+          <text x="${tx + 40}" y="${ty + 30}" fill="${dim}" font-size="8.5" font-family="var(--mono)">${esc(x.engine)}</text>
         </g>`;
       });
     });
   }
 
-  // Central GitPulse Relay (SHARP SQUARE HUB)
+  // Central GitPulse Relay
   const code = (st.session || {}).code || '';
   let relayHtml = `<g>
-    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="${rh}" fill="${panel}" stroke="${con}" stroke-width="1.5" />
-    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="24" fill="${panel2}" stroke="${line}" stroke-width="1" />
+    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="${rh}" rx="4" ry="4" fill="${panel}" stroke="${con}" stroke-width="1.5" />
+    <rect x="${rxRelay}" y="${ryRelay}" width="${rw}" height="24" rx="4" ry="4" fill="${panel2}" stroke="${line}" stroke-width="1" />
     <text x="${hub[0]}" y="${ryRelay + 16}" text-anchor="middle" fill="${con}" font-size="9.5" font-weight="700" letter-spacing=".08em" font-family="var(--mono)">GITPULSE RELAY</text>
     <text x="${hub[0]}" y="${hub[1] + 8}" text-anchor="middle" fill="${fg}" font-size="13.5" font-weight="700" font-family="var(--mono)">${esc(code)}</text>
     <text x="${hub[0]}" y="${hub[1] + 25}" text-anchor="middle" fill="${dim}" font-size="8.5" font-family="var(--mono)">AST CONTRACT HUB</text>
@@ -514,28 +521,27 @@ function renderNet(nodes, st) {
   $('netHint').textContent = nodes.length ? `coordinator: ${label(st, st.cluster.leader_id)}` + (succ.length ? ` · next host: ${succ[0]}` : '') : '';
 }
 
-// Packet animations: Sharp square particles and tile border flashes
+// Packet animations: circular particles and node pulse flashes
 function packet(from, to, color, delay = 0) {
   const g = $('packets'); if (!g || !pos[from] || !pos[to]) return;
   const p1 = pos[from], p2 = pos[to];
-  const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-  r.setAttribute('width', 8);
-  r.setAttribute('height', 8);
+  const r = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  r.setAttribute('r', 4.5);
   r.setAttribute('fill', color);
-  r.style.transform = `translate(${p1[0] - 4}px, ${p1[1] - 4}px)`;
+  r.style.transform = `translate(${p1[0]}px, ${p1[1]}px)`;
   g.appendChild(r);
   r.animate([
-    { transform: `translate(${p1[0] - 4}px, ${p1[1] - 4}px)` },
-    { transform: `translate(${p2[0] - 4}px, ${p2[1] - 4}px)` }
+    { transform: `translate(${p1[0]}px, ${p1[1]}px)` },
+    { transform: `translate(${p2[0]}px, ${p2[1]}px)` }
   ], { duration: 800, delay, easing: 'ease-in-out', fill: 'forwards' }).onfinish = () => r.remove();
 }
 
 function pulseTile(id, color) {
-  const el = document.getElementById(`agent-tile-${id}`);
+  const el = document.getElementById(`agent-node-${id}`) || document.getElementById(`agent-tile-${id}`);
   if (el) {
     el.animate([
-      { stroke: color, strokeWidth: '3px' },
-      { stroke: 'var(--line2)', strokeWidth: '1px' }
+      { stroke: color, strokeWidth: '3.5px' },
+      { stroke: 'var(--line2)', strokeWidth: '1.5px' }
     ], { duration: 1000, easing: 'ease-out' });
   }
 }
@@ -570,6 +576,7 @@ function rxText(n) {
 }
 
 function renderMachines(nodes, st) {
+  if (!$('machines')) return;
   const G = groups(nodes, st);
   const flows = st.flows || [];
   $('machines').innerHTML = G.map((g) => {
@@ -748,6 +755,9 @@ const KIND = {
   private: { k: 'var(--private)', i: '■' },
   contract: { k: 'var(--contract)', i: '→' },
   deliver: { k: 'var(--join)', i: '✓' },
+  collision: { k: 'var(--bad)', i: '⚠' },
+  sync: { k: 'var(--private)', i: '⟳' },
+  commit: { k: 'var(--contract)', i: '◆' },
   join: { k: 'var(--join)', i: '+' },
   leave: { k: 'var(--dim)', i: '–' },
   machine: { k: 'var(--machine)', i: '▣' },
@@ -780,6 +790,12 @@ function renderFeed(flows, st) {
         extra = `<div class="d"><span class="tag" style="color:var(--private)">0 B sent</span>${esc(f.detail)}</div>`;
       } else if (f.kind === 'deliver') {
         extra = `<pre>${(f.contract || []).map((l) => `<span class="${l[0] === '+' ? 'add' : 'del'}">${esc(l)}</span>`).join('\n')}</pre><div class="d">${esc(f.detail)}</div>`;
+      } else if (f.kind === 'collision') {
+        extra = `<div class="d"><span class="tag" style="color:var(--bad);border-color:var(--bad);font-weight:700;">COLLISION PRE-EMPTED</span>${esc(f.detail)}</div>`;
+      } else if (f.kind === 'commit') {
+        extra = `<div class="d"><span class="tag" style="color:var(--contract);border-color:var(--contract);font-weight:700;">GIT COALESCE</span>${esc(f.detail)}</div>`;
+      } else if (f.kind === 'sync') {
+        extra = `<div class="d"><span class="tag" style="color:var(--private);font-weight:700;">SYNCED TO DISK</span>${esc(f.detail)}</div>`;
       } else if (f.detail) {
         extra = `<div class="d">${esc(f.detail)}</div>`;
       }
@@ -873,6 +889,21 @@ function pollTunnel() {
   });
 }
 $('shareBtn').onclick = () => { if (!S) return; mode = null; $('modal').classList.add('open'); renderInvite(); };
+const cBtn = $('coalesceBtn');
+if (cBtn) {
+  cBtn.onclick = async () => {
+    cBtn.disabled = true;
+    cBtn.textContent = 'Coalescing…';
+    try {
+      await fetch('/api/git/coalesce', { method: 'POST' });
+      cBtn.textContent = 'Coalesced!';
+      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
+    } catch (e) {
+      cBtn.textContent = 'Failed';
+      setTimeout(() => { cBtn.textContent = 'Coalesce Git'; cBtn.disabled = false; }, 1600);
+    }
+  };
+}
 $('closeModal').onclick = () => $('modal').classList.remove('open');
 $('modal').onclick = (e) => { if (e.target === $('modal')) $('modal').classList.remove('open'); };
 
